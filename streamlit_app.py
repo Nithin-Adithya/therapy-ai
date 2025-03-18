@@ -721,54 +721,127 @@ Your goal is to provide supportive, thoughtful responses to users who are seekin
     return {"role": "system", "content": base_prompt}
 
 def main():
-    # Determine if on mobile device
-    user_agent = ""
-    try:
-        user_agent = st.get_option("theme.base")  # Just to get any server side option
-        is_mobile_view = True  # Default to mobile view to be safe
-    except:
-        is_mobile_view = True
+    # Force mobile view ALWAYS
+    is_mobile_view = True
     
-    # For mobile devices, don't use sidebar at all
-    if is_mobile_view:
-        # Set config to hide sidebar completely
-        st.set_page_config(
-            page_title=APP_TITLE,
-            page_icon="💬",
-            layout="wide",
-            initial_sidebar_state="collapsed",
-            menu_items=None
-        )
+    # Set absolute minimal config
+    st.set_page_config(
+        page_title=APP_TITLE,
+        page_icon="💬",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
+    
+    # Inject extreme CSS and JavaScript to forcefully remove the sidebar
+    st.markdown("""
+    <style>
+    /* EXTREME MEASURES to remove sidebar */
+    [data-testid="stSidebar"] {display: none !important;}
+    [data-testid="collapsedControl"] {display: none !important;}
+    
+    /* Completely disable all sidebar related elements */
+    .css-1ope8sv, .css-1aehpvj, .css-1aumxhk, .css-1d391kg,
+    .css-12oz5g7, .css-yyj0jg, .css-16huue1, .css-10oheav,
+    .css-1dp5vir, .css-1n76uvr, .css-1vq4p4l, .css-1d0tddh,
+    .e8zbici0, .e8zbici1, .e8zbici2, .e1fqkh3o3, .e1fqkh3o4 {
+        display: none !important;
+        width: 0 !important;
+        height: 0 !important;
+        max-width: 0 !important;
+        max-height: 0 !important;
+        overflow: hidden !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        position: absolute !important;
+        z-index: -9999 !important;
+        visibility: hidden !important;
+    }
+    
+    /* Force main content to full width */
+    .main .block-container {
+        max-width: 100vw !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        width: 100% !important;
+    }
+    
+    /* Hide toolbar and menu */
+    div[data-testid="stToolbar"] {display: none !important;}
+    div[role="toolbar"] {display: none !important;}
+    #MainMenu {visibility: hidden !important;}
+    
+    /* Hide status indicators */
+    div[data-testid="stStatusWidget"] {visibility: hidden !important;}
+    </style>
+    
+    <script>
+    // EXTREME DOM manipulation to kill sidebar
+    document.addEventListener("DOMContentLoaded", function() {
+        function removeSidebar() {
+            console.log("Removing sidebar...");
+            
+            // Find ALL sidebar elements by various selectors
+            const selectors = [
+                '[data-testid="stSidebar"]',
+                '.css-1ope8sv', '.css-1aehpvj', '.css-1aumxhk', 
+                '.css-12oz5g7', '.css-yyj0jg', '.css-16huue1',
+                '[data-testid="collapsedControl"]',
+                'section.sidebar'
+            ];
+            
+            selectors.forEach(selector => {
+                const elements = document.querySelectorAll(selector);
+                elements.forEach(el => {
+                    if (el) {
+                        try {
+                            // First try to remove completely
+                            el.parentNode.removeChild(el);
+                        } catch (e) {
+                            // If removal fails, try to hide it completely
+                            el.style.cssText = "display:none !important; width:0 !important; height:0 !important; position:absolute !important; top:-9999px !important; left:-9999px !important; opacity:0 !important; pointer-events:none !important; z-index:-9999 !important;";
+                        }
+                    }
+                });
+            });
+            
+            // Force main content to full width
+            const mainElements = document.querySelectorAll('.main, .main .block-container, .stApp');
+            mainElements.forEach(el => {
+                if (el) {
+                    el.style.maxWidth = '100%';
+                    el.style.width = '100%';
+                    el.style.padding = '1rem';
+                    el.style.margin = '0';
+                }
+            });
+        }
         
-        # Use CSS to completely hide the sidebar
-        st.markdown("""
-        <style>
-        /* Completely remove sidebar on all devices */
-        [data-testid="stSidebar"] {display: none !important;}
-        [data-testid="collapsedControl"] {display: none !important;}
-        div[data-testid="stToolbar"] {display: none;}
-        div[role="toolbar"] {display: none;}
-        div[data-testid="stReportTableContainer"] {max-width: 100% !important;}
-        /* Make main content full width */
-        .main > div {max-width: 100% !important; padding: 1rem !important;}
-        #MainMenu {visibility: hidden;}
-        </style>
-        """, unsafe_allow_html=True)
-    else:
-        # Desktop view with sidebar
-        st.set_page_config(
-            page_title=APP_TITLE,
-            page_icon="💬",
-            layout="wide",
-            initial_sidebar_state="expanded"
-        )
+        // Run immediately and repeatedly to ensure it works
+        removeSidebar();
+        setTimeout(removeSidebar, 100);
+        setTimeout(removeSidebar, 500);
+        setTimeout(removeSidebar, 1000);
+        
+        // Also run when elements are added to the DOM
+        const observer = new MutationObserver(function(mutations) {
+            removeSidebar();
+        });
+        
+        observer.observe(document.body, { 
+            childList: true, 
+            subtree: true 
+        });
+    });
+    </script>
+    """, unsafe_allow_html=True)
     
-    # Use custom CSS to optimize rendering with responsive design
+    # Add styling for the chat interface
     st.markdown("""
     <style>
     /* Base styling */
     .block-container {padding-top: 1rem; padding-bottom: 1rem;}
-    .main .block-container {max-width: 1200px; padding-left: 1rem; padding-right: 1rem;}
     
     /* Welcome message styling */
     .welcome-message {
@@ -779,48 +852,13 @@ def main():
         font-weight: 500;
     }
     
-    /* Responsive design for different screen sizes */
-    @media (max-width: 768px) {
-        /* Mobile styles */
-        .main .block-container {
-            padding-left: 0.5rem;
-            padding-right: 0.5rem;
-        }
-        .welcome-message {
-            font-size: 1.1rem;
-            margin-bottom: 10px;
-        }
-        /* Make chat messages more compact on mobile */
-        .stChatMessage {
-            padding: 0.5rem !important;
-        }
-        /* Adjust the sidebar width on mobile */
-        section[data-testid="stSidebar"] {
-            width: 100% !important;
-            min-width: 100% !important;
-        }
-    }
-    
-    @media (min-width: 769px) and (max-width: 1200px) {
-        /* Tablet styles */
-        .main .block-container {
-            max-width: 900px;
-        }
-    }
-    
-    @media (min-width: 1201px) {
-        /* Desktop styles */
-        .main .block-container {
-            max-width: 1100px;
-        }
-    }
-    
     /* Style improvements for chat interface */
     .stChatMessage {
         background-color: #f0f2f6 !important;
         border-radius: 10px !important;
         margin-bottom: 0.5rem !important;
         box-shadow: 0 1px 2px rgba(0,0,0,0.1) !important;
+        padding: 0.75rem !important;
     }
     
     /* User messages vs AI messages */
@@ -843,56 +881,18 @@ def main():
         border-top: 1px solid #e0e0e0 !important;
     }
     
-    /* Improve sidebar styling */
-    section[data-testid="stSidebar"] .block-container {
-        padding-top: 2rem !important;
-    }
-    
-    /* Hide sidebar on mobile by default */
+    /* Mobile-specific styling */
     @media (max-width: 768px) {
-        /* Completely hide the sidebar on mobile */
-        [data-testid="stSidebar"] {
-            display: none !important;
-            width: 0px !important;
-            min-width: 0px !important;
-            max-width: 0px !important;
-            height: 0px !important;
-            min-height: 0px !important;
-            position: absolute !important;
-            z-index: -1 !important;
-            opacity: 0 !important;
-            visibility: hidden !important;
-            transform: translateX(-100%) !important;
-            pointer-events: none !important;
-        }
-        
-        /* Hide any trace of the sidebar toggle button */
-        [data-testid="collapsedControl"] {
-            display: none !important;
-            opacity: 0 !important;
-            visibility: hidden !important;
-            width: 0px !important;
-            height: 0px !important;
-            min-width: 0px !important;
-            min-height: 0px !important;
-            position: absolute !important;
-            z-index: -1 !important;
-            pointer-events: none !important;
-        }
-        
-        /* Force main content to full width on mobile */
         .main .block-container {
-            max-width: 100% !important;
             padding-left: 0.5rem !important;
             padding-right: 0.5rem !important;
         }
-        
-        /* Ensure the app takes full width on mobile */
-        .stApp {
-            margin: 0;
-            padding: 0;
-            width: 100% !important;
-            overflow-x: hidden !important;
+        .welcome-message {
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+        }
+        .stChatMessage {
+            padding: 0.5rem !important;
         }
     }
     </style>

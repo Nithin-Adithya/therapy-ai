@@ -721,49 +721,127 @@ Your goal is to provide supportive, thoughtful responses to users who are seekin
     return {"role": "system", "content": base_prompt}
 
 def main():
-    # Determine if on mobile device - default to mobile view to be safe
+    # Force mobile view ALWAYS
     is_mobile_view = True
-
-    # For mobile devices, don't use sidebar at all
-    if is_mobile_view:
-        # Set config to hide sidebar completely
-        st.set_page_config(
-            page_title=APP_TITLE,
-            page_icon="💬",
-            layout="wide",
-            initial_sidebar_state="collapsed",
-            menu_items=None
-        )
-        
-        # Use CSS to completely hide the sidebar and ensure it can't appear
-        st.markdown("""
-        <style>
-        /* Completely remove sidebar on mobile devices */
-        [data-testid="stSidebar"] {display: none !important;}
-        [data-testid="collapsedControl"] {display: none !important;}
-        div[data-testid="stToolbar"] {display: none;}
-        div[role="toolbar"] {display: none;}
-        div[data-testid="stReportTableContainer"] {max-width: 100% !important;}
-        /* Make main content full width */
-        .main > div {max-width: 100% !important; padding: 1rem !important;}
-        #MainMenu {visibility: hidden;}
-        </style>
-        """, unsafe_allow_html=True)
-    else:
-        # Desktop view with sidebar
-        st.set_page_config(
-            page_title=APP_TITLE,
-            page_icon="💬",
-            layout="wide",
-            initial_sidebar_state="expanded"
-        )
     
-    # Use custom CSS to optimize rendering with responsive design
+    # Set absolute minimal config
+    st.set_page_config(
+        page_title=APP_TITLE,
+        page_icon="💬",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
+    
+    # Inject extreme CSS and JavaScript to forcefully remove the sidebar
+    st.markdown("""
+    <style>
+    /* EXTREME MEASURES to remove sidebar */
+    [data-testid="stSidebar"] {display: none !important;}
+    [data-testid="collapsedControl"] {display: none !important;}
+    
+    /* Completely disable all sidebar related elements */
+    .css-1ope8sv, .css-1aehpvj, .css-1aumxhk, .css-1d391kg,
+    .css-12oz5g7, .css-yyj0jg, .css-16huue1, .css-10oheav,
+    .css-1dp5vir, .css-1n76uvr, .css-1vq4p4l, .css-1d0tddh,
+    .e8zbici0, .e8zbici1, .e8zbici2, .e1fqkh3o3, .e1fqkh3o4 {
+        display: none !important;
+        width: 0 !important;
+        height: 0 !important;
+        max-width: 0 !important;
+        max-height: 0 !important;
+        overflow: hidden !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        position: absolute !important;
+        z-index: -9999 !important;
+        visibility: hidden !important;
+    }
+    
+    /* Force main content to full width */
+    .main .block-container {
+        max-width: 100vw !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        width: 100% !important;
+    }
+    
+    /* Hide toolbar and menu */
+    div[data-testid="stToolbar"] {display: none !important;}
+    div[role="toolbar"] {display: none !important;}
+    #MainMenu {visibility: hidden !important;}
+    
+    /* Hide status indicators */
+    div[data-testid="stStatusWidget"] {visibility: hidden !important;}
+    </style>
+    
+    <script>
+    // EXTREME DOM manipulation to kill sidebar
+    document.addEventListener("DOMContentLoaded", function() {
+        function removeSidebar() {
+            console.log("Removing sidebar...");
+            
+            // Find ALL sidebar elements by various selectors
+            const selectors = [
+                '[data-testid="stSidebar"]',
+                '.css-1ope8sv', '.css-1aehpvj', '.css-1aumxhk', 
+                '.css-12oz5g7', '.css-yyj0jg', '.css-16huue1',
+                '[data-testid="collapsedControl"]',
+                'section.sidebar'
+            ];
+            
+            selectors.forEach(selector => {
+                const elements = document.querySelectorAll(selector);
+                elements.forEach(el => {
+                    if (el) {
+                        try {
+                            // First try to remove completely
+                            el.parentNode.removeChild(el);
+                        } catch (e) {
+                            // If removal fails, try to hide it completely
+                            el.style.cssText = "display:none !important; width:0 !important; height:0 !important; position:absolute !important; top:-9999px !important; left:-9999px !important; opacity:0 !important; pointer-events:none !important; z-index:-9999 !important;";
+                        }
+                    }
+                });
+            });
+            
+            // Force main content to full width
+            const mainElements = document.querySelectorAll('.main, .main .block-container, .stApp');
+            mainElements.forEach(el => {
+                if (el) {
+                    el.style.maxWidth = '100%';
+                    el.style.width = '100%';
+                    el.style.padding = '1rem';
+                    el.style.margin = '0';
+                }
+            });
+        }
+        
+        // Run immediately and repeatedly to ensure it works
+        removeSidebar();
+        setTimeout(removeSidebar, 100);
+        setTimeout(removeSidebar, 500);
+        setTimeout(removeSidebar, 1000);
+        
+        // Also run when elements are added to the DOM
+        const observer = new MutationObserver(function(mutations) {
+            removeSidebar();
+        });
+        
+        observer.observe(document.body, { 
+            childList: true, 
+            subtree: true 
+        });
+    });
+    </script>
+    """, unsafe_allow_html=True)
+    
+    # Add styling for the chat interface
     st.markdown("""
     <style>
     /* Base styling */
     .block-container {padding-top: 1rem; padding-bottom: 1rem;}
-    .main .block-container {max-width: 1200px; padding-left: 1rem; padding-right: 1rem;}
     
     /* Welcome message styling */
     .welcome-message {
@@ -774,48 +852,13 @@ def main():
         font-weight: 500;
     }
     
-    /* Responsive design for different screen sizes */
-    @media (max-width: 768px) {
-        /* Mobile styles */
-        .main .block-container {
-            padding-left: 0.5rem;
-            padding-right: 0.5rem;
-        }
-        .welcome-message {
-            font-size: 1.1rem;
-            margin-bottom: 10px;
-        }
-        /* Make chat messages more compact on mobile */
-        .stChatMessage {
-            padding: 0.5rem !important;
-        }
-        /* Adjust the sidebar width on mobile */
-        section[data-testid="stSidebar"] {
-            width: 100% !important;
-            min-width: 100% !important;
-        }
-    }
-    
-    @media (min-width: 769px) and (max-width: 1200px) {
-        /* Tablet styles */
-        .main .block-container {
-            max-width: 900px;
-        }
-    }
-    
-    @media (min-width: 1201px) {
-        /* Desktop styles */
-        .main .block-container {
-            max-width: 1100px;
-        }
-    }
-    
     /* Style improvements for chat interface */
     .stChatMessage {
         background-color: #f0f2f6 !important;
         border-radius: 10px !important;
         margin-bottom: 0.5rem !important;
         box-shadow: 0 1px 2px rgba(0,0,0,0.1) !important;
+        padding: 0.75rem !important;
     }
     
     /* User messages vs AI messages */
@@ -838,57 +881,18 @@ def main():
         border-top: 1px solid #e0e0e0 !important;
     }
     
-    /* Improve sidebar styling */
-    section[data-testid="stSidebar"] .block-container {
-        padding-top: 2rem !important;
-    }
-    
-    /* Hide sidebar on mobile by default */
+    /* Mobile-specific styling */
     @media (max-width: 768px) {
-        /* Completely hide the sidebar on mobile */
-        [data-testid="stSidebar"] {
-            display: none !important;
-            width: 0px !important;
-            min-width: 0px !important;
-            max-width: 0px !important;
-            height: 0px !important;
-            min-height: 0px !important;
-            max-height: 0px !important;
-            position: absolute !important;
-            z-index: -1 !important;
-            opacity: 0 !important;
-            visibility: hidden !important;
-            transform: translateX(-100%) !important;
-            pointer-events: none !important;
-        }
-        
-        /* Hide any trace of the sidebar toggle button */
-        [data-testid="collapsedControl"] {
-            display: none !important;
-            opacity: 0 !important;
-            visibility: hidden !important;
-            width: 0px !important;
-            height: 0px !important;
-            min-width: 0px !important;
-            min-height: 0px !important;
-            position: absolute !important;
-            z-index: -1 !important;
-            pointer-events: none !important;
-        }
-        
-        /* Force main content to full width on mobile */
         .main .block-container {
-            max-width: 100% !important;
             padding-left: 0.5rem !important;
             padding-right: 0.5rem !important;
         }
-        
-        /* Ensure the app takes full width on mobile */
-        .stApp {
-            margin: 0;
-            padding: 0;
-            width: 100% !important;
-            overflow-x: hidden !important;
+        .welcome-message {
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+        }
+        .stChatMessage {
+            padding: 0.5rem !important;
         }
     }
     </style>
@@ -934,74 +938,7 @@ def main():
             st.warning("⚠️ Gemini API Key not found or not set. Using local fallback responses.")
         st.session_state.api_checked = True
     
-    # Initialize sentiment visualization in sidebar
-    with st.sidebar:
-        # Only display sentiment analysis on desktop devices
-        if not is_mobile_view:
-            st.subheader("Sentiment Analysis")
-            
-            # Show model loading status only if still loading
-            if st.session_state.get("model_loading", True) and not st.session_state.get("model_loaded", False):
-                with st.spinner("Initializing sentiment analysis..."):
-                    pass  # Just show the spinner without text
-            
-            # Show sentiment chart if we have data
-            if len(st.session_state.sentiment_history) > 0:
-                # Add visual color indicators for sentiment ranges
-                st.markdown("""
-                <style>
-                .positive-sentiment { color: green; font-weight: bold; }
-                .neutral-sentiment { color: gray; font-weight: bold; }
-                .negative-sentiment { color: red; font-weight: bold; }
-                </style>
-                
-                <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                    <span class="negative-sentiment">Negative</span>
-                    <span class="neutral-sentiment">Neutral</span>
-                    <span class="positive-sentiment">Positive</span>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Create well-formatted chart with clear labels
-                recent_sentiments = st.session_state.sentiment_history[-10:] if len(st.session_state.sentiment_history) > 10 else st.session_state.sentiment_history
-                chart_data = pd.DataFrame({"Sentiment": recent_sentiments})
-                
-                # Add custom chart with better formatting
-                st.line_chart(
-                    chart_data,
-                    use_container_width=True,
-                    height=200
-                )
-                
-                # Display metrics in columns for better layout
-                col1, col2 = st.columns(2)
-                
-                # Calculate average sentiment
-                recent_sentiment = st.session_state.sentiment_history[-5:] if len(st.session_state.sentiment_history) >= 5 else st.session_state.sentiment_history
-                avg_sentiment = sum(recent_sentiment) / len(recent_sentiment)
-                
-                with col1:
-                    st.metric("Avg Sentiment", f"{avg_sentiment:.2f}", get_sentiment_label(avg_sentiment))
-                
-                with col2:
-                    st.metric("Messages", len(st.session_state.messages) // 2)
-                
-                # Show sentiment trend analysis if we have enough data
-                if len(st.session_state.messages) >= 2:
-                    trend = analyze_sentiment_trend(st.session_state.messages[-6:] if len(st.session_state.messages) >= 6 else st.session_state.messages)
-                    
-                    # Use color-coded trend indicators
-                    trend_color = {
-                        "improving": "green",
-                        "declining": "red",
-                        "fluctuating": "orange",
-                        "stable": "gray"
-                    }.get(trend, "gray")
-                    
-                    st.markdown(f"<p style='color:{trend_color}'>Recent trend: <b>{trend.capitalize()}</b></p>", unsafe_allow_html=True)
-            else:
-                # Add blank space placeholder for better layout instead of info message
-                st.write("")
+    # NO SIDEBAR CODE - Skip sidebar code completely!
     
     # Display chat messages with optimized rendering
     with chat_area:
