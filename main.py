@@ -721,22 +721,42 @@ Your goal is to provide supportive, thoughtful responses to users who are seekin
     return {"role": "system", "content": base_prompt}
 
 def main():
-    # Set page config with sidebar expanded by default only on desktop
-    is_mobile_view = False
-    try:
-        # Try to detect mobile browsers via user agent (run on server side)
-        import re
-        user_agent = re.search("User-Agent: .*", str(st.get_option("browser.serverAddress")))
-        if user_agent and ("Mobile" in user_agent.group(0) or "Android" in user_agent.group(0) or "iPhone" in user_agent.group(0)):
-            is_mobile_view = True
-    except:
-        pass
+    # Determine if on mobile device - default to mobile view to be safe
+    is_mobile_view = True
+
+    # For mobile devices, don't use sidebar at all
+    if is_mobile_view:
+        # Set config to hide sidebar completely
+        st.set_page_config(
+            page_title=APP_TITLE,
+            page_icon="💬",
+            layout="wide",
+            initial_sidebar_state="collapsed",
+            menu_items=None
+        )
         
-    # Configure app with proper initial sidebar state
-    st.set_page_config(page_title=APP_TITLE, 
-                      page_icon="💬", 
-                      layout="wide", 
-                      initial_sidebar_state="collapsed" if is_mobile_view else "expanded")
+        # Use CSS to completely hide the sidebar and ensure it can't appear
+        st.markdown("""
+        <style>
+        /* Completely remove sidebar on mobile devices */
+        [data-testid="stSidebar"] {display: none !important;}
+        [data-testid="collapsedControl"] {display: none !important;}
+        div[data-testid="stToolbar"] {display: none;}
+        div[role="toolbar"] {display: none;}
+        div[data-testid="stReportTableContainer"] {max-width: 100% !important;}
+        /* Make main content full width */
+        .main > div {max-width: 100% !important; padding: 1rem !important;}
+        #MainMenu {visibility: hidden;}
+        </style>
+        """, unsafe_allow_html=True)
+    else:
+        # Desktop view with sidebar
+        st.set_page_config(
+            page_title=APP_TITLE,
+            page_icon="💬",
+            layout="wide",
+            initial_sidebar_state="expanded"
+        )
     
     # Use custom CSS to optimize rendering with responsive design
     st.markdown("""
@@ -880,126 +900,6 @@ def main():
     # Add welcoming message
     st.markdown('<p class="welcome-message">Hi! there I am here to help you</p>', unsafe_allow_html=True)
     
-    # Add script to completely disable sidebar on mobile
-    st.markdown("""
-    <script>
-        // Immediately execute on page load
-        (function() {
-            // Check if on mobile device
-            if (window.innerWidth < 768) {
-                // Forcefully remove sidebar elements
-                function removeSidebar() {
-                    // Hide sidebar completely
-                    const sidebar = document.querySelector('[data-testid="stSidebar"]');
-                    if (sidebar) {
-                        sidebar.style.display = 'none';
-                        sidebar.style.width = '0px';
-                        sidebar.style.minWidth = '0px';
-                        sidebar.style.maxWidth = '0px';
-                        sidebar.style.height = '0px';
-                        sidebar.style.position = 'absolute';
-                        sidebar.style.zIndex = '-1';
-                        sidebar.style.opacity = '0';
-                        sidebar.style.visibility = 'hidden';
-                        sidebar.style.pointerEvents = 'none';
-                    }
-                    
-                    // Hide sidebar toggle button
-                    const toggleButton = document.querySelector('[data-testid="collapsedControl"]');
-                    if (toggleButton) {
-                        toggleButton.style.display = 'none';
-                        toggleButton.style.opacity = '0';
-                        toggleButton.style.visibility = 'hidden';
-                        toggleButton.style.width = '0px';
-                        toggleButton.style.height = '0px';
-                    }
-                }
-                
-                // Run immediately and also after a delay to ensure it works
-                removeSidebar();
-                setTimeout(removeSidebar, 100);
-                setTimeout(removeSidebar, 500);
-                setTimeout(removeSidebar, 1000);
-                
-                // Also run whenever the window is resized
-                window.addEventListener('resize', removeSidebar);
-            }
-        })();
-    </script>
-    """, unsafe_allow_html=True)
-    
-    # Check if on mobile device and handle responsively
-    def is_mobile():
-        import streamlit as st
-        try:
-            # Use session state to cache the result
-            if 'is_mobile' not in st.session_state:
-                # Create a container and measure its width in pixels
-                container = st.empty()
-                container.write('<span id="width-test"></span>', unsafe_allow_html=True)
-                
-                # JavaScript to detect screen width
-                js = """
-                <script>
-                    window.parent.document.querySelector('[id^="width-test"]').innerHTML = window.innerWidth;
-                    if (window.innerWidth < 768) {
-                        // Force sidebar to collapse on mobile
-                        const sidebarButton = window.parent.document.querySelector('button[kind="header"][aria-label="Close"]');
-                        if (sidebarButton) sidebarButton.click();
-                    }
-                </script>
-                """
-                st.markdown(js, unsafe_allow_html=True)
-                
-                # Check if width is less than 768px (mobile breakpoint)
-                try:
-                    width_text = st.session_state.get('width_text', '1200')
-                    width = int(width_text)
-                    st.session_state.is_mobile = width < 768
-                except:
-                    st.session_state.is_mobile = False
-                
-            return st.session_state.is_mobile
-        except:
-            # Default to desktop if detection fails
-            return False
-    
-    # Adjust sidebar state based on device
-    if is_mobile():
-        # Collapse sidebar on mobile by default
-        if st.session_state.get("sidebar_collapsed") is None:
-            st.session_state.sidebar_collapsed = True
-            # Add JavaScript to collapse sidebar on mobile - this ensures it works
-            st.markdown("""
-            <script>
-                // Force sidebar to collapse on mobile
-                (function() {
-                    if (window.innerWidth < 768) {
-                        // Try to find and click the collapse button
-                        const sidebarButton = document.querySelector('button[kind="header"][aria-label="Close"]');
-                        if (sidebarButton) {
-                            sidebarButton.click();
-                        }
-                        
-                        // Add additional style to ensure sidebar is hidden
-                        const style = document.createElement('style');
-                        style.textContent = `
-                            @media (max-width: 768px) {
-                                [data-testid="stSidebar"] {
-                                    width: 0px !important;
-                                    min-width: 0px !important;
-                                    max-width: 0px !important;
-                                    transform: translateX(-100%);
-                                    transition: transform 300ms ease 0s, min-width 300ms ease 0s, max-width 300ms ease 0s;
-                                }
-                            }
-                        `;
-                        document.head.appendChild(style);
-                    }
-                })();
-            </script>
-            """, unsafe_allow_html=True)
-    
     # Initialize GUI components immediately
     chat_area = st.container()
     prompt_area = st.empty()
@@ -1036,9 +936,8 @@ def main():
     
     # Initialize sentiment visualization in sidebar
     with st.sidebar:
-        # Only show sentiment analysis on desktop devices
-        is_mobile_device = is_mobile()
-        if not is_mobile_device:
+        # Only display sentiment analysis on desktop devices
+        if not is_mobile_view:
             st.subheader("Sentiment Analysis")
             
             # Show model loading status only if still loading
