@@ -730,11 +730,21 @@ def main():
     <style>
     .block-container {padding-top: 1rem; padding-bottom: 1rem;}
     .main .block-container {max-width: 900px; padding-left: 1rem; padding-right: 1rem;}
+    .welcome-message {
+        font-size: 1.3rem; 
+        color: #4CAF50; 
+        margin-bottom: 20px;
+        text-align: center;
+        font-weight: 500;
+    }
     </style>
     """, unsafe_allow_html=True)
     
     # Simple header - show first for instant feedback
     st.title(APP_TITLE)
+    
+    # Add welcoming message
+    st.markdown('<p class="welcome-message">Hi! there I am here to help you</p>', unsafe_allow_html=True)
     
     # Initialize GUI components immediately
     chat_area = st.container()
