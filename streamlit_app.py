@@ -721,124 +721,62 @@ Your goal is to provide supportive, thoughtful responses to users who are seekin
     return {"role": "system", "content": base_prompt}
 
 def main():
-    # Force mobile view ALWAYS
-    is_mobile_view = True
+    # Check if on mobile device
+    try:
+        # Get screen width via client-side detection
+        screen_width_code = """
+        <script>
+        window.addEventListener('load', function() {
+            var screenWidth = window.innerWidth;
+            document.getElementById('screenWidthElement').textContent = screenWidth;
+        });
+        </script>
+        <div id="screenWidthElement" style="display:none;"></div>
+        """
+        st.markdown(screen_width_code, unsafe_allow_html=True)
+        
+        # Default to desktop view (show sidebar)
+        is_mobile_view = False
+    except:
+        # Default to desktop view if detection fails
+        is_mobile_view = False
     
-    # Set absolute minimal config
+    # Configure app
     st.set_page_config(
         page_title=APP_TITLE,
         page_icon="💬",
         layout="wide",
-        initial_sidebar_state="collapsed",
+        initial_sidebar_state="collapsed" if is_mobile_view else "expanded"
     )
     
-    # Inject extreme CSS and JavaScript to forcefully remove the sidebar
+    # Add mobile detection and CSS for different devices
     st.markdown("""
-    <style>
-    /* EXTREME MEASURES to remove sidebar */
-    [data-testid="stSidebar"] {display: none !important;}
-    [data-testid="collapsedControl"] {display: none !important;}
-    
-    /* Completely disable all sidebar related elements */
-    .css-1ope8sv, .css-1aehpvj, .css-1aumxhk, .css-1d391kg,
-    .css-12oz5g7, .css-yyj0jg, .css-16huue1, .css-10oheav,
-    .css-1dp5vir, .css-1n76uvr, .css-1vq4p4l, .css-1d0tddh,
-    .e8zbici0, .e8zbici1, .e8zbici2, .e1fqkh3o3, .e1fqkh3o4 {
-        display: none !important;
-        width: 0 !important;
-        height: 0 !important;
-        max-width: 0 !important;
-        max-height: 0 !important;
-        overflow: hidden !important;
-        padding: 0 !important;
-        margin: 0 !important;
-        opacity: 0 !important;
-        pointer-events: none !important;
-        position: absolute !important;
-        z-index: -9999 !important;
-        visibility: hidden !important;
-    }
-    
-    /* Force main content to full width */
-    .main .block-container {
-        max-width: 100vw !important;
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
-        width: 100% !important;
-    }
-    
-    /* Hide toolbar and menu */
-    div[data-testid="stToolbar"] {display: none !important;}
-    div[role="toolbar"] {display: none !important;}
-    #MainMenu {visibility: hidden !important;}
-    
-    /* Hide status indicators */
-    div[data-testid="stStatusWidget"] {visibility: hidden !important;}
-    </style>
-    
     <script>
-    // EXTREME DOM manipulation to kill sidebar
-    document.addEventListener("DOMContentLoaded", function() {
-        function removeSidebar() {
-            console.log("Removing sidebar...");
+    document.addEventListener('DOMContentLoaded', function() {
+        const isMobile = window.innerWidth < 768;
+        
+        if (isMobile) {
+            // For mobile: Hide sidebar completely
+            const style = document.createElement('style');
+            style.innerHTML = `
+                [data-testid="stSidebar"] {display: none !important;}
+                [data-testid="collapsedControl"] {display: none !important;}
+                .main .block-container {max-width: 100% !important; padding: 1rem !important;}
+            `;
+            document.head.appendChild(style);
             
-            // Find ALL sidebar elements by various selectors
-            const selectors = [
-                '[data-testid="stSidebar"]',
-                '.css-1ope8sv', '.css-1aehpvj', '.css-1aumxhk', 
-                '.css-12oz5g7', '.css-yyj0jg', '.css-16huue1',
-                '[data-testid="collapsedControl"]',
-                'section.sidebar'
-            ];
-            
-            selectors.forEach(selector => {
-                const elements = document.querySelectorAll(selector);
-                elements.forEach(el => {
-                    if (el) {
-                        try {
-                            // First try to remove completely
-                            el.parentNode.removeChild(el);
-                        } catch (e) {
-                            // If removal fails, try to hide it completely
-                            el.style.cssText = "display:none !important; width:0 !important; height:0 !important; position:absolute !important; top:-9999px !important; left:-9999px !important; opacity:0 !important; pointer-events:none !important; z-index:-9999 !important;";
-                        }
-                    }
-                });
-            });
-            
-            // Force main content to full width
-            const mainElements = document.querySelectorAll('.main, .main .block-container, .stApp');
-            mainElements.forEach(el => {
-                if (el) {
-                    el.style.maxWidth = '100%';
-                    el.style.width = '100%';
-                    el.style.padding = '1rem';
-                    el.style.margin = '0';
-                }
-            });
+            // Try to remove sidebar elements
+            setTimeout(() => {
+                const sidebar = document.querySelector('[data-testid="stSidebar"]');
+                if (sidebar) sidebar.style.display = 'none';
+                
+                const toggleButton = document.querySelector('[data-testid="collapsedControl"]');
+                if (toggleButton) toggleButton.style.display = 'none';
+            }, 100);
         }
-        
-        // Run immediately and repeatedly to ensure it works
-        removeSidebar();
-        setTimeout(removeSidebar, 100);
-        setTimeout(removeSidebar, 500);
-        setTimeout(removeSidebar, 1000);
-        
-        // Also run when elements are added to the DOM
-        const observer = new MutationObserver(function(mutations) {
-            removeSidebar();
-        });
-        
-        observer.observe(document.body, { 
-            childList: true, 
-            subtree: true 
-        });
     });
     </script>
-    """, unsafe_allow_html=True)
     
-    # Add styling for the chat interface
-    st.markdown("""
     <style>
     /* Base styling */
     .block-container {padding-top: 1rem; padding-bottom: 1rem;}
@@ -883,9 +821,13 @@ def main():
     
     /* Mobile-specific styling */
     @media (max-width: 768px) {
+        [data-testid="stSidebar"] {display: none !important;}
+        [data-testid="collapsedControl"] {display: none !important;}
+        
         .main .block-container {
             padding-left: 0.5rem !important;
             padding-right: 0.5rem !important;
+            max-width: 100% !important;
         }
         .welcome-message {
             font-size: 1.1rem;
@@ -938,74 +880,72 @@ def main():
             st.warning("⚠️ Gemini API Key not found or not set. Using local fallback responses.")
         st.session_state.api_checked = True
     
-    # Initialize sentiment visualization in sidebar
+    # Initialize sentiment visualization in sidebar on desktop only
     with st.sidebar:
-        # Only display sentiment analysis on desktop devices
-        if not is_mobile_view:
-            st.subheader("Sentiment Analysis")
+        st.subheader("Sentiment Analysis")
+        
+        # Show model loading status only if still loading
+        if st.session_state.get("model_loading", True) and not st.session_state.get("model_loaded", False):
+            with st.spinner("Initializing sentiment analysis..."):
+                pass  # Just show the spinner without text
+        
+        # Show sentiment chart if we have data
+        if len(st.session_state.sentiment_history) > 0:
+            # Add visual color indicators for sentiment ranges
+            st.markdown("""
+            <style>
+            .positive-sentiment { color: green; font-weight: bold; }
+            .neutral-sentiment { color: gray; font-weight: bold; }
+            .negative-sentiment { color: red; font-weight: bold; }
+            </style>
             
-            # Show model loading status only if still loading
-            if st.session_state.get("model_loading", True) and not st.session_state.get("model_loaded", False):
-                with st.spinner("Initializing sentiment analysis..."):
-                    pass  # Just show the spinner without text
+            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                <span class="negative-sentiment">Negative</span>
+                <span class="neutral-sentiment">Neutral</span>
+                <span class="positive-sentiment">Positive</span>
+            </div>
+            """, unsafe_allow_html=True)
             
-            # Show sentiment chart if we have data
-            if len(st.session_state.sentiment_history) > 0:
-                # Add visual color indicators for sentiment ranges
-                st.markdown("""
-                <style>
-                .positive-sentiment { color: green; font-weight: bold; }
-                .neutral-sentiment { color: gray; font-weight: bold; }
-                .negative-sentiment { color: red; font-weight: bold; }
-                </style>
+            # Create well-formatted chart with clear labels
+            recent_sentiments = st.session_state.sentiment_history[-10:] if len(st.session_state.sentiment_history) > 10 else st.session_state.sentiment_history
+            chart_data = pd.DataFrame({"Sentiment": recent_sentiments})
+            
+            # Add custom chart with better formatting
+            st.line_chart(
+                chart_data,
+                use_container_width=True,
+                height=200
+            )
+            
+            # Display metrics in columns for better layout
+            col1, col2 = st.columns(2)
+            
+            # Calculate average sentiment
+            recent_sentiment = st.session_state.sentiment_history[-5:] if len(st.session_state.sentiment_history) >= 5 else st.session_state.sentiment_history
+            avg_sentiment = sum(recent_sentiment) / len(recent_sentiment)
+            
+            with col1:
+                st.metric("Avg Sentiment", f"{avg_sentiment:.2f}", get_sentiment_label(avg_sentiment))
+            
+            with col2:
+                st.metric("Messages", len(st.session_state.messages) // 2)
+            
+            # Show sentiment trend analysis if we have enough data
+            if len(st.session_state.messages) >= 2:
+                trend = analyze_sentiment_trend(st.session_state.messages[-6:] if len(st.session_state.messages) >= 6 else st.session_state.messages)
                 
-                <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                    <span class="negative-sentiment">Negative</span>
-                    <span class="neutral-sentiment">Neutral</span>
-                    <span class="positive-sentiment">Positive</span>
-                </div>
-                """, unsafe_allow_html=True)
+                # Use color-coded trend indicators
+                trend_color = {
+                    "improving": "green",
+                    "declining": "red",
+                    "fluctuating": "orange",
+                    "stable": "gray"
+                }.get(trend, "gray")
                 
-                # Create well-formatted chart with clear labels
-                recent_sentiments = st.session_state.sentiment_history[-10:] if len(st.session_state.sentiment_history) > 10 else st.session_state.sentiment_history
-                chart_data = pd.DataFrame({"Sentiment": recent_sentiments})
-                
-                # Add custom chart with better formatting
-                st.line_chart(
-                    chart_data,
-                    use_container_width=True,
-                    height=200
-                )
-                
-                # Display metrics in columns for better layout
-                col1, col2 = st.columns(2)
-                
-                # Calculate average sentiment
-                recent_sentiment = st.session_state.sentiment_history[-5:] if len(st.session_state.sentiment_history) >= 5 else st.session_state.sentiment_history
-                avg_sentiment = sum(recent_sentiment) / len(recent_sentiment)
-                
-                with col1:
-                    st.metric("Avg Sentiment", f"{avg_sentiment:.2f}", get_sentiment_label(avg_sentiment))
-                
-                with col2:
-                    st.metric("Messages", len(st.session_state.messages) // 2)
-                
-                # Show sentiment trend analysis if we have enough data
-                if len(st.session_state.messages) >= 2:
-                    trend = analyze_sentiment_trend(st.session_state.messages[-6:] if len(st.session_state.messages) >= 6 else st.session_state.messages)
-                    
-                    # Use color-coded trend indicators
-                    trend_color = {
-                        "improving": "green",
-                        "declining": "red",
-                        "fluctuating": "orange",
-                        "stable": "gray"
-                    }.get(trend, "gray")
-                    
-                    st.markdown(f"<p style='color:{trend_color}'>Recent trend: <b>{trend.capitalize()}</b></p>", unsafe_allow_html=True)
-            else:
-                # Add blank space placeholder for better layout instead of info message
-                st.write("")
+                st.markdown(f"<p style='color:{trend_color}'>Recent trend: <b>{trend.capitalize()}</b></p>", unsafe_allow_html=True)
+        else:
+            # Add blank space placeholder for better layout instead of info message
+            st.write("")
     
     # Display chat messages with optimized rendering
     with chat_area:
