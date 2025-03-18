@@ -721,6 +721,14 @@ Your goal is to provide supportive, thoughtful responses to users who are seekin
     return {"role": "system", "content": base_prompt}
 
 def main():
+    # Configure app FIRST - must be the first Streamlit command
+    st.set_page_config(
+        page_title=APP_TITLE,
+        page_icon="💬",
+        layout="wide",
+        initial_sidebar_state="expanded"  # Default to expanded, we'll collapse on mobile with JS
+    )
+    
     # Check if on mobile device
     try:
         # Get screen width via client-side detection
@@ -740,14 +748,6 @@ def main():
     except:
         # Default to desktop view if detection fails
         is_mobile_view = False
-    
-    # Configure app
-    st.set_page_config(
-        page_title=APP_TITLE,
-        page_icon="💬",
-        layout="wide",
-        initial_sidebar_state="collapsed" if is_mobile_view else "expanded"
-    )
     
     # Add mobile detection and CSS for different devices
     st.markdown("""
