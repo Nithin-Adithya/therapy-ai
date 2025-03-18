@@ -794,6 +794,11 @@ def main():
         background-color: #F1F8E9 !important;
     }
     
+    /* Ensure text messages have proper color contrast */
+    .stChatMessage p, .stChatMessage div, .stChatMessage span {
+        color: #111 !important;
+    }
+    
     /* Improve chat input styling */
     .stChatInputContainer {
         padding-top: 1rem !important;
