@@ -817,6 +817,18 @@ def main():
         }
         section[data-testid="stSidebar"][aria-expanded="false"] {
             margin-left: -100% !important;
+            width: 0px !important;
+            display: none !important;
+        }
+        button[kind="header"][aria-label="Close"] {
+            display: none !important;
+        }
+        
+        /* Maximize chat area */
+        .main .block-container {
+            max-width: 100% !important;
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
         }
     }
     </style>
@@ -872,10 +884,30 @@ def main():
             st.markdown("""
             <script>
                 // Force sidebar to collapse on mobile
-                if (window.innerWidth < 768) {
-                    const sidebarButton = document.querySelector('button[kind="header"][aria-label="Close"]');
-                    if (sidebarButton) sidebarButton.click();
-                }
+                (function() {
+                    if (window.innerWidth < 768) {
+                        // Try to find and click the collapse button
+                        const sidebarButton = document.querySelector('button[kind="header"][aria-label="Close"]');
+                        if (sidebarButton) {
+                            sidebarButton.click();
+                        }
+                        
+                        // Add additional style to ensure sidebar is hidden
+                        const style = document.createElement('style');
+                        style.textContent = `
+                            @media (max-width: 768px) {
+                                [data-testid="stSidebar"] {
+                                    width: 0px !important;
+                                    min-width: 0px !important;
+                                    max-width: 0px !important;
+                                    transform: translateX(-100%);
+                                    transition: transform 300ms ease 0s, min-width 300ms ease 0s, max-width 300ms ease 0s;
+                                }
+                            }
+                        `;
+                        document.head.appendChild(style);
+                    }
+                })();
             </script>
             """, unsafe_allow_html=True)
     
@@ -915,70 +947,71 @@ def main():
     
     # Initialize sentiment visualization in sidebar
     with st.sidebar:
-        st.subheader("Sentiment Analysis")
-        
-        # Show model loading status only if still loading
-        if st.session_state.get("model_loading", True) and not st.session_state.get("model_loaded", False):
-            with st.spinner("Initializing sentiment analysis..."):
-                pass  # Just show the spinner without text
-        
-        # Show sentiment chart if we have data
-        if len(st.session_state.sentiment_history) > 0:
-            # Add visual color indicators for sentiment ranges
-            st.markdown("""
-            <style>
-            .positive-sentiment { color: green; font-weight: bold; }
-            .neutral-sentiment { color: gray; font-weight: bold; }
-            .negative-sentiment { color: red; font-weight: bold; }
-            </style>
+        # On mobile, create an expander that's collapsed by default
+        is_mobile_device = is_mobile()
+        with st.expander("Sentiment Analysis", expanded=not is_mobile_device):
+            # Show model loading status only if still loading
+            if st.session_state.get("model_loading", True) and not st.session_state.get("model_loaded", False):
+                with st.spinner("Initializing sentiment analysis..."):
+                    pass  # Just show the spinner without text
             
-            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                <span class="negative-sentiment">Negative</span>
-                <span class="neutral-sentiment">Neutral</span>
-                <span class="positive-sentiment">Positive</span>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Create well-formatted chart with clear labels
-            recent_sentiments = st.session_state.sentiment_history[-10:] if len(st.session_state.sentiment_history) > 10 else st.session_state.sentiment_history
-            chart_data = pd.DataFrame({"Sentiment": recent_sentiments})
-            
-            # Add custom chart with better formatting
-            st.line_chart(
-                chart_data,
-                use_container_width=True,
-                height=200
-            )
-            
-            # Display metrics in columns for better layout
-            col1, col2 = st.columns(2)
-            
-            # Calculate average sentiment
-            recent_sentiment = st.session_state.sentiment_history[-5:] if len(st.session_state.sentiment_history) >= 5 else st.session_state.sentiment_history
-            avg_sentiment = sum(recent_sentiment) / len(recent_sentiment)
-            
-            with col1:
-                st.metric("Avg Sentiment", f"{avg_sentiment:.2f}", get_sentiment_label(avg_sentiment))
-            
-            with col2:
-                st.metric("Messages", len(st.session_state.messages) // 2)
-            
-            # Show sentiment trend analysis if we have enough data
-            if len(st.session_state.messages) >= 2:
-                trend = analyze_sentiment_trend(st.session_state.messages[-6:] if len(st.session_state.messages) >= 6 else st.session_state.messages)
+            # Show sentiment chart if we have data
+            if len(st.session_state.sentiment_history) > 0:
+                # Add visual color indicators for sentiment ranges
+                st.markdown("""
+                <style>
+                .positive-sentiment { color: green; font-weight: bold; }
+                .neutral-sentiment { color: gray; font-weight: bold; }
+                .negative-sentiment { color: red; font-weight: bold; }
+                </style>
                 
-                # Use color-coded trend indicators
-                trend_color = {
-                    "improving": "green",
-                    "declining": "red",
-                    "fluctuating": "orange",
-                    "stable": "gray"
-                }.get(trend, "gray")
+                <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                    <span class="negative-sentiment">Negative</span>
+                    <span class="neutral-sentiment">Neutral</span>
+                    <span class="positive-sentiment">Positive</span>
+                </div>
+                """, unsafe_allow_html=True)
                 
-                st.markdown(f"<p style='color:{trend_color}'>Recent trend: <b>{trend.capitalize()}</b></p>", unsafe_allow_html=True)
-        else:
-            # Add blank space placeholder for better layout instead of info message
-            st.write("")
+                # Create well-formatted chart with clear labels
+                recent_sentiments = st.session_state.sentiment_history[-10:] if len(st.session_state.sentiment_history) > 10 else st.session_state.sentiment_history
+                chart_data = pd.DataFrame({"Sentiment": recent_sentiments})
+                
+                # Add custom chart with better formatting
+                st.line_chart(
+                    chart_data,
+                    use_container_width=True,
+                    height=200
+                )
+                
+                # Display metrics in columns for better layout
+                col1, col2 = st.columns(2)
+                
+                # Calculate average sentiment
+                recent_sentiment = st.session_state.sentiment_history[-5:] if len(st.session_state.sentiment_history) >= 5 else st.session_state.sentiment_history
+                avg_sentiment = sum(recent_sentiment) / len(recent_sentiment)
+                
+                with col1:
+                    st.metric("Avg Sentiment", f"{avg_sentiment:.2f}", get_sentiment_label(avg_sentiment))
+                
+                with col2:
+                    st.metric("Messages", len(st.session_state.messages) // 2)
+                
+                # Show sentiment trend analysis if we have enough data
+                if len(st.session_state.messages) >= 2:
+                    trend = analyze_sentiment_trend(st.session_state.messages[-6:] if len(st.session_state.messages) >= 6 else st.session_state.messages)
+                    
+                    # Use color-coded trend indicators
+                    trend_color = {
+                        "improving": "green",
+                        "declining": "red",
+                        "fluctuating": "orange",
+                        "stable": "gray"
+                    }.get(trend, "gray")
+                    
+                    st.markdown(f"<p style='color:{trend_color}'>Recent trend: <b>{trend.capitalize()}</b></p>", unsafe_allow_html=True)
+            else:
+                # Add blank space placeholder for better layout instead of info message
+                st.write("")
     
     # Display chat messages with optimized rendering
     with chat_area:
