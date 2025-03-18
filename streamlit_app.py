@@ -725,17 +725,94 @@ def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="💬", layout="wide", 
                       initial_sidebar_state="expanded")
     
-    # Use custom CSS to optimize rendering
+    # Use custom CSS to optimize rendering with responsive design
     st.markdown("""
     <style>
+    /* Base styling */
     .block-container {padding-top: 1rem; padding-bottom: 1rem;}
-    .main .block-container {max-width: 900px; padding-left: 1rem; padding-right: 1rem;}
+    .main .block-container {max-width: 1200px; padding-left: 1rem; padding-right: 1rem;}
+    
+    /* Welcome message styling */
     .welcome-message {
         font-size: 1.3rem; 
         color: #4CAF50; 
         margin-bottom: 20px;
         text-align: center;
         font-weight: 500;
+    }
+    
+    /* Responsive design for different screen sizes */
+    @media (max-width: 768px) {
+        /* Mobile styles */
+        .main .block-container {
+            padding-left: 0.5rem;
+            padding-right: 0.5rem;
+        }
+        .welcome-message {
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+        }
+        /* Make chat messages more compact on mobile */
+        .stChatMessage {
+            padding: 0.5rem !important;
+        }
+        /* Adjust the sidebar width on mobile */
+        section[data-testid="stSidebar"] {
+            width: 100% !important;
+            min-width: 100% !important;
+        }
+    }
+    
+    @media (min-width: 769px) and (max-width: 1200px) {
+        /* Tablet styles */
+        .main .block-container {
+            max-width: 900px;
+        }
+    }
+    
+    @media (min-width: 1201px) {
+        /* Desktop styles */
+        .main .block-container {
+            max-width: 1100px;
+        }
+    }
+    
+    /* Style improvements for chat interface */
+    .stChatMessage {
+        background-color: #f0f2f6 !important;
+        border-radius: 10px !important;
+        margin-bottom: 0.5rem !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.1) !important;
+    }
+    
+    /* User messages vs AI messages */
+    .stChatMessage[data-testid="stChatMessage-USER"] {
+        background-color: #E3F2FD !important;
+    }
+    
+    .stChatMessage[data-testid="stChatMessage-ASSISTANT"] {
+        background-color: #F1F8E9 !important;
+    }
+    
+    /* Improve chat input styling */
+    .stChatInputContainer {
+        padding-top: 1rem !important;
+        border-top: 1px solid #e0e0e0 !important;
+    }
+    
+    /* Improve sidebar styling */
+    section[data-testid="stSidebar"] .block-container {
+        padding-top: 2rem !important;
+    }
+    
+    /* Hide sidebar on mobile by default */
+    @media (max-width: 768px) {
+        section[data-testid="stSidebar"][aria-expanded="true"] {
+            margin-left: 0px !important;
+        }
+        section[data-testid="stSidebar"][aria-expanded="false"] {
+            margin-left: -100% !important;
+        }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -745,6 +822,47 @@ def main():
     
     # Add welcoming message
     st.markdown('<p class="welcome-message">Hi! there I am here to help you</p>', unsafe_allow_html=True)
+    
+    # Check if on mobile device and handle responsively
+    def is_mobile():
+        try:
+            # Use session state to cache the result
+            if 'is_mobile' not in st.session_state:
+                # Create a container and measure its width in pixels
+                container = st.empty()
+                container.write('<span id="width-test"></span>', unsafe_allow_html=True)
+                
+                # JavaScript to detect screen width
+                js = """
+                <script>
+                    window.parent.document.querySelector('[id^="width-test"]').innerHTML = window.innerWidth;
+                </script>
+                """
+                st.markdown(js, unsafe_allow_html=True)
+                
+                # Check if width is less than 768px (mobile breakpoint)
+                st.session_state.is_mobile = False  # Default to desktop
+                
+            return st.session_state.is_mobile
+        except:
+            # Default to desktop if detection fails
+            return False
+    
+    # Adjust sidebar state based on device
+    if is_mobile():
+        # Collapse sidebar on mobile by default
+        if st.session_state.get("sidebar_collapsed") is None:
+            st.session_state.sidebar_collapsed = True
+            # Add JavaScript to collapse sidebar
+            js = """
+            <script>
+                // Collapse sidebar on mobile devices
+                if (window.innerWidth < 768) {
+                    document.querySelector('button[kind="header"][aria-label="Close"]').click();
+                }
+            </script>
+            """
+            st.markdown(js, unsafe_allow_html=True)
     
     # Initialize GUI components immediately
     chat_area = st.container()
