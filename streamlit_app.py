@@ -726,23 +726,25 @@ def main():
         page_title=APP_TITLE,
         page_icon="💬",
         layout="wide",
-        initial_sidebar_state="expanded"  # Default to expanded (for desktop)
+        initial_sidebar_state="expanded"  # Default to expanded for desktop
     )
     
-    # Check if on mobile device and setup mobile-specific JS
+    # Detect if on mobile device
+    is_mobile_view = False
+    
+    # Add mobile detection with CSS to completely hide sidebar on mobile
     st.markdown("""
     <script>
-    // Execute immediately after the DOM is loaded
     document.addEventListener('DOMContentLoaded', function() {
-        // Check if on mobile
         if (window.innerWidth < 768) {
-            // Force collapse sidebar on mobile immediately
-            const collapseButton = document.querySelector('[data-testid="collapsedControl"][aria-label="Expand"]');
-            if (!collapseButton) {
-                // If the expand button isn't found, the sidebar is already expanded - collapse it
-                const closeButton = document.querySelector('button[kind="header"][aria-label="Close"]');
-                if (closeButton) closeButton.click();
-            }
+            // Force hide sidebar on mobile devices
+            const style = document.createElement('style');
+            style.textContent = `
+                [data-testid="stSidebar"] {display: none !important;}
+                [data-testid="collapsedControl"] {display: none !important;}
+                .main .block-container {max-width: 100% !important; padding: 1rem !important;}
+            `;
+            document.head.appendChild(style);
         }
     });
     </script>
@@ -791,43 +793,11 @@ def main():
     
     /* Mobile-specific styling */
     @media (max-width: 768px) {
-        /* Make sidebar full width when expanded */
-        [data-testid="stSidebar"][aria-expanded="true"] {
-            width: 100% !important;
-            min-width: 100% !important;
-            max-width: 100% !important;
-            margin-right: 0 !important;
-            z-index: 999 !important;
-        }
+        /* Completely hide sidebar on mobile */
+        [data-testid="stSidebar"] {display: none !important;}
+        [data-testid="collapsedControl"] {display: none !important;}
         
-        /* Make the toggle button more visible and easier to tap */
-        [data-testid="collapsedControl"] {
-            height: 40px !important;
-            width: 40px !important;
-            background-color: rgba(255, 255, 255, 0.9) !important;
-            border-radius: 50% !important;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2) !important;
-            display: flex !important;
-            justify-content: center !important;
-            align-items: center !important;
-            z-index: 100 !important;
-            margin-top: 6px !important;
-            margin-left: 6px !important;
-        }
-        
-        /* Add a visual hint to indicate the toggle button purpose */
-        [data-testid="collapsedControl"]::after {
-            content: "📊" !important;
-            position: absolute !important;
-            font-size: 14px !important;
-            bottom: -18px !important;
-            left: 6px !important;
-            background-color: rgba(255, 255, 255, 0.9) !important;
-            padding: 2px 6px !important;
-            border-radius: 10px !important;
-            white-space: nowrap !important;
-        }
-        
+        /* Main content takes full width */
         .main .block-container {
             padding-left: 0.5rem !important;
             padding-right: 0.5rem !important;
@@ -849,34 +819,6 @@ def main():
     
     # Add welcoming message
     st.markdown('<p class="welcome-message">Hi! there I am here to help you</p>', unsafe_allow_html=True)
-    
-    # Show hint for mobile users about accessing sentiment analysis
-    st.markdown("""
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        if (window.innerWidth < 768) {
-            // Add a hint for mobile users that's visible for a few seconds
-            const hintDiv = document.createElement('div');
-            hintDiv.innerHTML = `<div style="background-color: #E3F2FD; padding: 8px; border-radius: 4px; margin-bottom: 16px; text-align: center; font-size: 0.9rem;">
-                Tap the arrow button in the top-left to view sentiment analysis 📊
-            </div>`;
-            
-            // Insert after welcome message
-            const welcomeMsg = document.querySelector('.welcome-message');
-            if (welcomeMsg && welcomeMsg.parentNode) {
-                welcomeMsg.parentNode.insertBefore(hintDiv, welcomeMsg.nextSibling);
-                
-                // Fade out after 6 seconds
-                setTimeout(() => {
-                    hintDiv.style.transition = 'opacity 1.5s';
-                    hintDiv.style.opacity = '0';
-                    setTimeout(() => hintDiv.remove(), 1500);
-                }, 6000);
-            }
-        }
-    });
-    </script>
-    """, unsafe_allow_html=True)
     
     # Initialize GUI components immediately
     chat_area = st.container()
