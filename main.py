@@ -948,9 +948,11 @@ def main():
     
     # Initialize sentiment visualization in sidebar
     with st.sidebar:
-        # On mobile, create an expander that's collapsed by default
+        # Only show sentiment analysis on desktop devices
         is_mobile_device = is_mobile()
-        with st.expander("Sentiment Analysis", expanded=not is_mobile_device):
+        if not is_mobile_device:
+            st.subheader("Sentiment Analysis")
+            
             # Show model loading status only if still loading
             if st.session_state.get("model_loading", True) and not st.session_state.get("model_loaded", False):
                 with st.spinner("Initializing sentiment analysis..."):
