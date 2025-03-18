@@ -1,0 +1,11 @@
+ID,Topic,Sentiment,Text
+1,Apple,Positive,"Just got my new iPhone and it's amazing! The camera quality is incredible. #Apple #iPhone"
+2,Google,Negative,"Google's customer service is terrible. Been trying to get help for 3 days now. #frustrated"
+3,Microsoft,Neutral,"Microsoft released a new update today. Anyone tried it yet?"
+4,Twitter,Positive,"I love how Twitter connects me with people around the world. Such a great platform!"
+5,Facebook,Negative,"Facebook privacy issues are concerning me. Thinking of deleting my account."
+6,Amazon,Positive,"My Amazon delivery arrived early! Great service as always. #Amazon"
+7,Netflix,Neutral,"Netflix has added some new shows this month. Looking for recommendations."
+8,Tesla,Positive,"Test drove a Tesla today. The acceleration is unbelievable! #ElectricCars"
+9,Samsung,Negative,"My Samsung phone keeps freezing. This is the third time this week. #annoyed"
+10,Spotify,Positive,"Spotify's personalized playlists are spot on! How do they know my taste so well?" 
