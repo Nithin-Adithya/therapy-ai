@@ -725,6 +725,36 @@ def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="💬", layout="wide", 
                       initial_sidebar_state="expanded")
     
+    # Immediately inject script to hide sidebar on mobile BEFORE any other content loads
+    st.markdown("""
+    <script>
+        // Immediately hide sidebar on mobile
+        (function() {
+            if (window.innerWidth < 768) {
+                const style = document.createElement('style');
+                style.textContent = `
+                    [data-testid="stSidebar"] {
+                        display: none !important;
+                        width: 0 !important;
+                        height: 0 !important;
+                        position: absolute !important;
+                        visibility: hidden !important;
+                        z-index: -999 !important;
+                        opacity: 0 !important;
+                        pointer-events: none !important;
+                        transform: translateX(-100%) !important;
+                    }
+                    .main .block-container {
+                        max-width: 100% !important;
+                        padding: 0 8px !important;
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+        })();
+    </script>
+    """, unsafe_allow_html=True)
+    
     # Use custom CSS to optimize rendering with responsive design
     st.markdown("""
     <style>
@@ -756,10 +786,24 @@ def main():
         .stChatMessage {
             padding: 0.5rem !important;
         }
-        /* Adjust the sidebar width on mobile */
-        section[data-testid="stSidebar"] {
-            width: 100% !important;
-            min-width: 100% !important;
+        /* Remove sidebar completely on mobile */
+        [data-testid="stSidebar"] {
+            display: none !important;
+            width: 0px !important;
+            height: 0px !important;
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+            z-index: -1 !important;
+        }
+        
+        /* Maximize chat area on mobile */
+        .main .block-container {
+            max-width: 100vw !important;
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
         }
     }
     
@@ -809,28 +853,6 @@ def main():
     section[data-testid="stSidebar"] .block-container {
         padding-top: 2rem !important;
     }
-    
-    /* Hide sidebar on mobile by default */
-    @media (max-width: 768px) {
-        section[data-testid="stSidebar"][aria-expanded="true"] {
-            margin-left: 0px !important;
-        }
-        section[data-testid="stSidebar"][aria-expanded="false"] {
-            margin-left: -100% !important;
-            width: 0px !important;
-            display: none !important;
-        }
-        button[kind="header"][aria-label="Close"] {
-            display: none !important;
-        }
-        
-        /* Maximize chat area */
-        .main .block-container {
-            max-width: 100% !important;
-            padding-left: 0.5rem !important;
-            padding-right: 0.5rem !important;
-        }
-    }
     </style>
     """, unsafe_allow_html=True)
     
@@ -839,78 +861,6 @@ def main():
     
     # Add welcoming message
     st.markdown('<p class="welcome-message">Hi! there I am here to help you</p>', unsafe_allow_html=True)
-    
-    # Check if on mobile device and handle responsively
-    def is_mobile():
-        import streamlit as st
-        try:
-            # Use session state to cache the result
-            if 'is_mobile' not in st.session_state:
-                # Create a container and measure its width in pixels
-                container = st.empty()
-                container.write('<span id="width-test"></span>', unsafe_allow_html=True)
-                
-                # JavaScript to detect screen width
-                js = """
-                <script>
-                    window.parent.document.querySelector('[id^="width-test"]').innerHTML = window.innerWidth;
-                    if (window.innerWidth < 768) {
-                        // Force sidebar to collapse on mobile
-                        const sidebarButton = window.parent.document.querySelector('button[kind="header"][aria-label="Close"]');
-                        if (sidebarButton) sidebarButton.click();
-                    }
-                </script>
-                """
-                st.markdown(js, unsafe_allow_html=True)
-                
-                # Check if width is less than 768px (mobile breakpoint)
-                try:
-                    width_text = st.session_state.get('width_text', '1200')
-                    width = int(width_text)
-                    st.session_state.is_mobile = width < 768
-                except:
-                    st.session_state.is_mobile = False
-                
-            return st.session_state.is_mobile
-        except:
-            # Default to desktop if detection fails
-            return False
-    
-    # Adjust sidebar state based on device
-    if is_mobile():
-        # Collapse sidebar on mobile by default
-        if st.session_state.get("sidebar_collapsed") is None:
-            st.session_state.sidebar_collapsed = True
-            # Add JavaScript to collapse sidebar on mobile - this ensures it works
-            st.markdown("""
-            <script>
-                // Force sidebar to collapse on mobile
-                (function() {
-                    if (window.innerWidth < 768) {
-                        // Try to find and click the collapse button
-                        const sidebarButton = document.querySelector('button[kind="header"][aria-label="Close"]');
-                        if (sidebarButton) {
-                            sidebarButton.click();
-                        }
-                        
-                        // Add additional style to ensure sidebar is hidden
-                        const style = document.createElement('style');
-                        style.textContent = `
-                            @media (max-width: 768px) {
-                                [data-testid="stSidebar"] {
-                                    width: 0px !important;
-                                    min-width: 0px !important;
-                                    max-width: 0px !important;
-                                    transform: translateX(-100%);
-                                    transition: transform 300ms ease 0s, min-width 300ms ease 0s, max-width 300ms ease 0s;
-                                }
-                            }
-                        `;
-                        document.head.appendChild(style);
-                    }
-                })();
-            </script>
-            """, unsafe_allow_html=True)
     
     # Initialize GUI components immediately
     chat_area = st.container()
@@ -948,73 +898,71 @@ def main():
     
     # Initialize sentiment visualization in sidebar
     with st.sidebar:
-        # Only show sentiment analysis on desktop devices
-        is_mobile_device = is_mobile()
-        if not is_mobile_device:
-            st.subheader("Sentiment Analysis")
+        # This section will only be visible on desktop since the sidebar itself is hidden on mobile
+        st.subheader("Sentiment Analysis")
+        
+        # Show model loading status only if still loading
+        if st.session_state.get("model_loading", True) and not st.session_state.get("model_loaded", False):
+            with st.spinner("Initializing sentiment analysis..."):
+                pass  # Just show the spinner without text
+        
+        # Show sentiment chart if we have data
+        if len(st.session_state.sentiment_history) > 0:
+            # Add visual color indicators for sentiment ranges
+            st.markdown("""
+            <style>
+            .positive-sentiment { color: green; font-weight: bold; }
+            .neutral-sentiment { color: gray; font-weight: bold; }
+            .negative-sentiment { color: red; font-weight: bold; }
+            </style>
             
-            # Show model loading status only if still loading
-            if st.session_state.get("model_loading", True) and not st.session_state.get("model_loaded", False):
-                with st.spinner("Initializing sentiment analysis..."):
-                    pass  # Just show the spinner without text
+            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                <span class="negative-sentiment">Negative</span>
+                <span class="neutral-sentiment">Neutral</span>
+                <span class="positive-sentiment">Positive</span>
+            </div>
+            """, unsafe_allow_html=True)
             
-            # Show sentiment chart if we have data
-            if len(st.session_state.sentiment_history) > 0:
-                # Add visual color indicators for sentiment ranges
-                st.markdown("""
-                <style>
-                .positive-sentiment { color: green; font-weight: bold; }
-                .neutral-sentiment { color: gray; font-weight: bold; }
-                .negative-sentiment { color: red; font-weight: bold; }
-                </style>
+            # Create well-formatted chart with clear labels
+            recent_sentiments = st.session_state.sentiment_history[-10:] if len(st.session_state.sentiment_history) > 10 else st.session_state.sentiment_history
+            chart_data = pd.DataFrame({"Sentiment": recent_sentiments})
+            
+            # Add custom chart with better formatting
+            st.line_chart(
+                chart_data,
+                use_container_width=True,
+                height=200
+            )
+            
+            # Display metrics in columns for better layout
+            col1, col2 = st.columns(2)
+            
+            # Calculate average sentiment
+            recent_sentiment = st.session_state.sentiment_history[-5:] if len(st.session_state.sentiment_history) >= 5 else st.session_state.sentiment_history
+            avg_sentiment = sum(recent_sentiment) / len(recent_sentiment)
+            
+            with col1:
+                st.metric("Avg Sentiment", f"{avg_sentiment:.2f}", get_sentiment_label(avg_sentiment))
+            
+            with col2:
+                st.metric("Messages", len(st.session_state.messages) // 2)
+            
+            # Show sentiment trend analysis if we have enough data
+            if len(st.session_state.messages) >= 2:
+                trend = analyze_sentiment_trend(st.session_state.messages[-6:] if len(st.session_state.messages) >= 6 else st.session_state.messages)
                 
-                <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                    <span class="negative-sentiment">Negative</span>
-                    <span class="neutral-sentiment">Neutral</span>
-                    <span class="positive-sentiment">Positive</span>
-                </div>
-                """, unsafe_allow_html=True)
+                # Use color-coded trend indicators
+                trend_color = {
+                    "improving": "green",
+                    "declining": "red",
+                    "fluctuating": "orange",
+                    "stable": "gray"
+                }.get(trend, "gray")
                 
-                # Create well-formatted chart with clear labels
-                recent_sentiments = st.session_state.sentiment_history[-10:] if len(st.session_state.sentiment_history) > 10 else st.session_state.sentiment_history
-                chart_data = pd.DataFrame({"Sentiment": recent_sentiments})
-                
-                # Add custom chart with better formatting
-                st.line_chart(
-                    chart_data,
-                    use_container_width=True,
-                    height=200
-                )
-                
-                # Display metrics in columns for better layout
-                col1, col2 = st.columns(2)
-                
-                # Calculate average sentiment
-                recent_sentiment = st.session_state.sentiment_history[-5:] if len(st.session_state.sentiment_history) >= 5 else st.session_state.sentiment_history
-                avg_sentiment = sum(recent_sentiment) / len(recent_sentiment)
-                
-                with col1:
-                    st.metric("Avg Sentiment", f"{avg_sentiment:.2f}", get_sentiment_label(avg_sentiment))
-                
-                with col2:
-                    st.metric("Messages", len(st.session_state.messages) // 2)
-                
-                # Show sentiment trend analysis if we have enough data
-                if len(st.session_state.messages) >= 2:
-                    trend = analyze_sentiment_trend(st.session_state.messages[-6:] if len(st.session_state.messages) >= 6 else st.session_state.messages)
-                    
-                    # Use color-coded trend indicators
-                    trend_color = {
-                        "improving": "green",
-                        "declining": "red",
-                        "fluctuating": "orange",
-                        "stable": "gray"
-                    }.get(trend, "gray")
-                    
-                    st.markdown(f"<p style='color:{trend_color}'>Recent trend: <b>{trend.capitalize()}</b></p>", unsafe_allow_html=True)
-            else:
-                # Add blank space placeholder for better layout instead of info message
-                st.write("")
+                st.markdown(f"<p style='color:{trend_color}'>Recent trend: <b>{trend.capitalize()}</b></p>", unsafe_allow_html=True)
+        else:
+            # Add blank space placeholder for better layout instead of info message
+            st.write("")
     
     # Display chat messages with optimized rendering
     with chat_area:
