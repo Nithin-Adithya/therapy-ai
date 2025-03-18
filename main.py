@@ -726,63 +726,23 @@ def main():
         page_title=APP_TITLE,
         page_icon="💬",
         layout="wide",
-        initial_sidebar_state="expanded"  # Default to expanded, we'll collapse on mobile with JS
+        initial_sidebar_state="expanded"  # Default to expanded (for desktop)
     )
     
-    # Check if on mobile device
-    try:
-        # Get screen width via client-side detection
-        screen_width_code = """
-        <script>
-        window.addEventListener('load', function() {
-            var screenWidth = window.innerWidth;
-            document.getElementById('screenWidthElement').textContent = screenWidth;
-        });
-        </script>
-        <div id="screenWidthElement" style="display:none;"></div>
-        """
-        st.markdown(screen_width_code, unsafe_allow_html=True)
-        
-        # Default to desktop view (show sidebar)
-        is_mobile_view = False
-    except:
-        # Default to desktop view if detection fails
-        is_mobile_view = False
-    
-    # Add mobile detection and CSS for different devices
+    # Check if on mobile device and setup mobile-specific JS
     st.markdown("""
     <script>
+    // Execute immediately after the DOM is loaded
     document.addEventListener('DOMContentLoaded', function() {
-        const isMobile = window.innerWidth < 768;
-        
-        if (isMobile) {
-            // For mobile: Initially hide sidebar but keep it functional if expanded
-            const style = document.createElement('style');
-            style.innerHTML = `
-                /* Initially hide sidebar on mobile but don't remove it completely */
-                [data-testid="stSidebar"][aria-expanded="false"] {display: none !important;}
-                
-                /* Style the main content to use full width by default */
-                .main .block-container {max-width: 100% !important; padding: 1rem !important;}
-                
-                /* Make the sidebar usable if a user chooses to expand it */
-                [data-testid="stSidebar"][aria-expanded="true"] {
-                    width: 100% !important;
-                    min-width: 100% !important;
-                    max-width: 100% !important;
-                    margin-right: 0 !important;
-                    z-index: 999 !important;
-                }
-            `;
-            document.head.appendChild(style);
-            
-            // Auto-collapse sidebar on mobile, but don't remove it
-            setTimeout(() => {
-                const toggleButton = document.querySelector('[data-testid="collapsedControl"]');
-                if (toggleButton && !document.querySelector('[data-testid="stSidebar"][aria-expanded="false"]')) {
-                    toggleButton.click();
-                }
-            }, 100);
+        // Check if on mobile
+        if (window.innerWidth < 768) {
+            // Force collapse sidebar on mobile immediately
+            const collapseButton = document.querySelector('[data-testid="collapsedControl"][aria-label="Expand"]');
+            if (!collapseButton) {
+                // If the expand button isn't found, the sidebar is already expanded - collapse it
+                const closeButton = document.querySelector('button[kind="header"][aria-label="Close"]');
+                if (closeButton) closeButton.click();
+            }
         }
     });
     </script>
@@ -831,9 +791,6 @@ def main():
     
     /* Mobile-specific styling */
     @media (max-width: 768px) {
-        /* Hide sidebar only when collapsed */
-        [data-testid="stSidebar"][aria-expanded="false"] {display: none !important;}
-        
         /* Make sidebar full width when expanded */
         [data-testid="stSidebar"][aria-expanded="true"] {
             width: 100% !important;
