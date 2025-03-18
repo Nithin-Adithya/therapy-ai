@@ -841,12 +841,22 @@ def main():
                 js = """
                 <script>
                     window.parent.document.querySelector('[id^="width-test"]').innerHTML = window.innerWidth;
+                    if (window.innerWidth < 768) {
+                        // Force sidebar to collapse on mobile
+                        const sidebarButton = window.parent.document.querySelector('button[kind="header"][aria-label="Close"]');
+                        if (sidebarButton) sidebarButton.click();
+                    }
                 </script>
                 """
                 st.markdown(js, unsafe_allow_html=True)
                 
                 # Check if width is less than 768px (mobile breakpoint)
-                st.session_state.is_mobile = False  # Default to desktop
+                try:
+                    width_text = st.session_state.get('width_text', '1200')
+                    width = int(width_text)
+                    st.session_state.is_mobile = width < 768
+                except:
+                    st.session_state.is_mobile = False
                 
             return st.session_state.is_mobile
         except:
@@ -858,6 +868,16 @@ def main():
         # Collapse sidebar on mobile by default
         if st.session_state.get("sidebar_collapsed") is None:
             st.session_state.sidebar_collapsed = True
+            # Add JavaScript to collapse sidebar on mobile - this ensures it works
+            st.markdown("""
+            <script>
+                // Force sidebar to collapse on mobile
+                if (window.innerWidth < 768) {
+                    const sidebarButton = document.querySelector('button[kind="header"][aria-label="Close"]');
+                    if (sidebarButton) sidebarButton.click();
+                }
+            </script>
+            """, unsafe_allow_html=True)
     
     # Initialize GUI components immediately
     chat_area = st.container()
