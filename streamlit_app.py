@@ -18,6 +18,8 @@ import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
+from main import main as run_main
+from main import initialize_app, is_mobile_device
 
 # Load environment variables
 load_dotenv()
@@ -720,287 +722,67 @@ Your goal is to provide supportive, thoughtful responses to users who are seekin
     
     return {"role": "system", "content": base_prompt}
 
-def main():
-    # Configure app FIRST - must be the first Streamlit command
+def run_app():
+    # Set page config with appropriate sidebar state
     st.set_page_config(
-        page_title=APP_TITLE,
-        page_icon="💬",
+        page_title="Therapy AI",
+        page_icon="💭",
         layout="wide",
-        initial_sidebar_state="expanded"  # Default to expanded for desktop
+        initial_sidebar_state="expanded" if not is_mobile_device() else "collapsed"
     )
     
-    # Detect if on mobile device
-    is_mobile_view = False
+    # Initialize Firebase and app
+    initialize_app()
     
-    # Add mobile detection with CSS to completely hide sidebar on mobile
+    # Add CSS to hide sidebar on mobile
     st.markdown("""
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        if (window.innerWidth < 768) {
-            // Force hide sidebar on mobile devices
-            const style = document.createElement('style');
-            style.textContent = `
-                [data-testid="stSidebar"] {display: none !important;}
-                [data-testid="collapsedControl"] {display: none !important;}
-                .main .block-container {max-width: 100% !important; padding: 1rem !important;}
-            `;
-            document.head.appendChild(style);
-        }
-    });
-    </script>
-    
     <style>
-    /* Base styling */
-    .block-container {padding-top: 1rem; padding-bottom: 1rem;}
-    
-    /* Welcome message styling */
-    .welcome-message {
-        font-size: 1.3rem; 
-        color: #4CAF50; 
-        margin-bottom: 20px;
-        text-align: center;
-        font-weight: 500;
-    }
-    
-    /* Style improvements for chat interface */
-    .stChatMessage {
-        background-color: #f0f2f6 !important;
-        border-radius: 10px !important;
-        margin-bottom: 0.5rem !important;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.1) !important;
-        padding: 0.75rem !important;
-    }
-    
-    /* User messages vs AI messages */
-    .stChatMessage[data-testid="stChatMessage-USER"] {
-        background-color: #E3F2FD !important;
-    }
-    
-    .stChatMessage[data-testid="stChatMessage-ASSISTANT"] {
-        background-color: #F1F8E9 !important;
-    }
-    
-    /* Ensure text messages have proper color contrast */
-    .stChatMessage p, .stChatMessage div, .stChatMessage span {
-        color: #111 !important;
-    }
-    
-    /* Improve chat input styling */
-    .stChatInputContainer {
-        padding-top: 1rem !important;
-        border-top: 1px solid #e0e0e0 !important;
-    }
-    
-    /* Mobile-specific styling */
     @media (max-width: 768px) {
-        /* Completely hide sidebar on mobile */
-        [data-testid="stSidebar"] {display: none !important;}
-        [data-testid="collapsedControl"] {display: none !important;}
-        
-        /* Main content takes full width */
+        section[data-testid="stSidebar"] {
+            display: none !important;
+        }
+        button[kind="header"] {
+            display: none !important;
+        }
         .main .block-container {
-            padding-left: 0.5rem !important;
-            padding-right: 0.5rem !important;
             max-width: 100% !important;
-        }
-        .welcome-message {
-            font-size: 1.1rem;
-            margin-bottom: 10px;
-        }
-        .stChatMessage {
-            padding: 0.5rem !important;
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+            padding-top: 2rem !important;
         }
     }
     </style>
     """, unsafe_allow_html=True)
     
-    # Simple header - show first for instant feedback
-    st.title(APP_TITLE)
+    # Add JavaScript to force disable sidebar on mobile
+    st.markdown("""
+    <script>
+    function hideSidebarOnMobile() {
+        if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
+            // Hide sidebar
+            const sidebar = document.querySelector('section[data-testid="stSidebar"]');
+            if (sidebar) sidebar.style.display = 'none';
+            
+            // Hide toggle button
+            const toggleButton = document.querySelector('button[kind="header"]');
+            if (toggleButton) toggleButton.style.display = 'none';
+        }
+    }
     
-    # Add welcoming message
-    st.markdown('<p class="welcome-message">Hi! there I am here to help you</p>', unsafe_allow_html=True)
+    // Run on page load and also after a short delay to ensure elements are loaded
+    if (document.readyState === 'complete') {
+        hideSidebarOnMobile();
+    } else {
+        window.addEventListener('load', hideSidebarOnMobile);
+    }
     
-    # Initialize GUI components immediately
-    chat_area = st.container()
-    prompt_area = st.empty()
+    // Also try after a slight delay to catch any late-loaded elements
+    setTimeout(hideSidebarOnMobile, 500);
+    </script>
+    """, unsafe_allow_html=True)
     
-    # Initialize model in background
-    if "model_loading" not in st.session_state:
-        st.session_state.model_loading = True
-        
-        # Create a thread to load model in background
-        import threading
-        
-        def load_model_in_background():
-            # Download NLTK resources if needed
-            download_nltk_resources()
-            
-            # Initialize database
-            init_database()
-            
-            # Train sentiment model
-            train_sentiment_model()
-            
-            # Mark as loaded
-            st.session_state.model_loading = False
-            st.session_state.model_loaded = True
-        
-        # Start background loading with smaller sample size
-        threading.Thread(target=load_model_in_background).start()
-    
-    # Check for API key only once
-    if not hasattr(st.session_state, "api_checked"):
-        if not GEMINI_API_KEY:
-            st.warning("⚠️ Gemini API Key not found or not set. Using local fallback responses.")
-        st.session_state.api_checked = True
-    
-    # Initialize sentiment visualization in sidebar on desktop only
-    with st.sidebar:
-        st.subheader("Sentiment Analysis")
-        
-        # Show model loading status only if still loading
-        if st.session_state.get("model_loading", True) and not st.session_state.get("model_loaded", False):
-            with st.spinner("Initializing sentiment analysis..."):
-                pass  # Just show the spinner without text
-        
-        # Show sentiment chart if we have data
-        if len(st.session_state.sentiment_history) > 0:
-            # Add visual color indicators for sentiment ranges
-            st.markdown("""
-            <style>
-            .positive-sentiment { color: green; font-weight: bold; }
-            .neutral-sentiment { color: gray; font-weight: bold; }
-            .negative-sentiment { color: red; font-weight: bold; }
-            </style>
-            
-            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                <span class="negative-sentiment">Negative</span>
-                <span class="neutral-sentiment">Neutral</span>
-                <span class="positive-sentiment">Positive</span>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Create well-formatted chart with clear labels
-            recent_sentiments = st.session_state.sentiment_history[-10:] if len(st.session_state.sentiment_history) > 10 else st.session_state.sentiment_history
-            chart_data = pd.DataFrame({"Sentiment": recent_sentiments})
-            
-            # Add custom chart with better formatting
-            st.line_chart(
-                chart_data,
-                use_container_width=True,
-                height=200
-            )
-            
-            # Display metrics in columns for better layout
-            col1, col2 = st.columns(2)
-            
-            # Calculate average sentiment
-            recent_sentiment = st.session_state.sentiment_history[-5:] if len(st.session_state.sentiment_history) >= 5 else st.session_state.sentiment_history
-            avg_sentiment = sum(recent_sentiment) / len(recent_sentiment)
-            
-            with col1:
-                st.metric("Avg Sentiment", f"{avg_sentiment:.2f}", get_sentiment_label(avg_sentiment))
-            
-            with col2:
-                st.metric("Messages", len(st.session_state.messages) // 2)
-            
-            # Show sentiment trend analysis if we have enough data
-            if len(st.session_state.messages) >= 2:
-                trend = analyze_sentiment_trend(st.session_state.messages[-6:] if len(st.session_state.messages) >= 6 else st.session_state.messages)
-                
-                # Use color-coded trend indicators
-                trend_color = {
-                    "improving": "green",
-                    "declining": "red",
-                    "fluctuating": "orange",
-                    "stable": "gray"
-                }.get(trend, "gray")
-                
-                st.markdown(f"<p style='color:{trend_color}'>Recent trend: <b>{trend.capitalize()}</b></p>", unsafe_allow_html=True)
-        else:
-            # Add blank space placeholder for better layout instead of info message
-            st.write("")
-    
-    # Display chat messages with optimized rendering
-    with chat_area:
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.write(message["content"])
-                
-                # Show sentiment for user messages
-                if message["role"] == "user" and message.get("sentiment") is not None:
-                    sentiment_score = message["sentiment"]
-                    sentiment_label = get_sentiment_label(sentiment_score)
-                    
-                    # Use color based on sentiment
-                    if sentiment_score > 0.3:
-                        color = "green"
-                    elif sentiment_score > 0:
-                        color = "lightgreen"
-                    elif sentiment_score == 0:
-                        color = "gray"
-                    elif sentiment_score > -0.3:
-                        color = "orange"
-                    else:
-                        color = "red"
-                        
-                    st.markdown(f"<span style='color:{color};font-size:0.8em'>Sentiment: {sentiment_label}</span>", unsafe_allow_html=True)
-    
-    # Input for new message
-    prompt = st.chat_input("Type your message here...")
-    if prompt:
-        # Add user message to chat history
-        if st.session_state.get("model_loaded", False):
-            # Use trained model
-            sentiment_score = analyze_sentiment(prompt)
-        else:
-            # Fallback to TextBlob until model is loaded
-            sentiment_score = TextBlob(prompt).sentiment.polarity
-            
-        user_message = {"role": "user", "content": prompt, "sentiment": sentiment_score}
-        st.session_state.messages.append(user_message)
-        st.session_state.sentiment_history.append(sentiment_score)
-        
-        # Display user message
-        with st.chat_message("user"):
-            st.write(prompt)
-            sentiment_label = get_sentiment_label(sentiment_score)
-            
-            # Use color based on sentiment
-            if sentiment_score > 0.3:
-                color = "green"
-            elif sentiment_score > 0:
-                color = "lightgreen"
-            elif sentiment_score == 0:
-                color = "gray"
-            elif sentiment_score > -0.3:
-                color = "orange"
-            else:
-                color = "red"
-                
-            st.markdown(f"<span style='color:{color};font-size:0.8em'>Sentiment: {sentiment_label}</span>", unsafe_allow_html=True)
-        
-        # Prepare messages for API call - only send necessary data
-        api_messages = [generate_therapeutic_system_prompt(sentiment_score)]
-        for msg in st.session_state.messages[-5:]:  # Only use last 5 messages for context
-            if msg.get("sentiment") is not None:
-                # For API calls, remove sentiment data
-                api_messages.append({"role": msg["role"], "content": msg["content"]})
-            else:
-                api_messages.append(msg)
-        
-        # Get and display assistant response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                response = call_gemini_api(api_messages)
-                st.write(response)
-        
-        # Add assistant response to chat history
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        
-        # Save conversation to database if model is ready
-        if st.session_state.get("model_loaded", False):
-            save_conversation(prompt, response, sentiment_score)
+    # Run the main app
+    run_main()
 
 if __name__ == "__main__":
-    main() 
+    run_app() 

@@ -1,45 +1,53 @@
-# Environment variables 
-.env 
-ECHO is off.
-# Database files 
-*.db 
-ECHO is off.
-# Large data files 
-Reviews.csv 
-twitter_training.csv 
-ECHO is off.
-# Python 
-__pycache__/ 
-*.py[cod] 
-*$py.class 
-*.so 
-.Python 
-build/ 
-develop-eggs/ 
-dist/ 
-downloads/ 
-eggs/ 
-.eggs/ 
-lib/ 
-lib64/ 
-parts/ 
-sdist/ 
-var/ 
-wheels/ 
-*.egg-info/ 
-.installed.cfg 
-*.egg 
-ECHO is off.
-# Virtual Environment 
-venv/ 
-env/ 
-ENV/ 
-ECHO is off.
-# Streamlit 
-.streamlit/ 
-ECHO is off.
-# Temporary files 
-*.bat 
-!requirements.txt 
-!streamlit_deploy.bat 
-temp_repo/ 
+# Environment variables and secrets
+.env
+firebase_credentials.json
+
+# Datasets that will be managed by Firebase instead
+*.csv
+*.tsv
+*.json
+!requirements.json
+!package.json
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Streamlit
+.streamlit/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
