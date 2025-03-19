@@ -1,5 +1,6 @@
 import os
 import json
+import sqlite3
 import datetime
 import random
 import requests
@@ -17,11 +18,6 @@ import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
-# Import Firebase functions
-from firebase_db import init_database, save_conversation, get_therapeutic_response
-from firebase_db import upload_dataset, download_dataset, save_sentiment_model, load_sentiment_model
-import google.generativeai as genai
-import uuid
 
 # Load environment variables
 load_dotenv()
@@ -29,35 +25,24 @@ load_dotenv()
 # Constants
 APP_TITLE = "Therapy AI"
 APP_DESCRIPTION = "A therapeutic chatbot with sentiment analysis powered by Gemini AI"
+DB_PATH = "therapy_data.db"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 TWITTER_DATA_PATH = "twitter_training.csv"
 REVIEWS_DATA_PATH = "Reviews.csv"
 
-def initialize_app():
-    """Initialize the application and database connections"""
-    # Initialize Firebase
-    init_database()
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
     
-    # Initialize Gemini API
-    try:
-        if GEMINI_API_KEY:
-            genai.configure(api_key=GEMINI_API_KEY)
-    except Exception as e:
-        st.error(f"Error initializing Gemini API: {str(e)}")
-    
-    # Initialize session state variables if not already set
-    if 'messages' not in st.session_state:
-        st.session_state.messages = []
-    
-    if 'chat_id' not in st.session_state:
-        st.session_state.chat_id = str(uuid.uuid4())
-    
-    if 'sentiment_model' not in st.session_state:
-        st.session_state.sentiment_model = None
-        
-    if 'vectorizer' not in st.session_state:
-        st.session_state.vectorizer = None
+if "sentiment_history" not in st.session_state:
+    st.session_state.sentiment_history = []
+
+if "sentiment_model" not in st.session_state:
+    st.session_state.sentiment_model = None
+
+if "vectorizer" not in st.session_state:
+    st.session_state.vectorizer = None
 
 def download_nltk_resources():
     """Download necessary NLTK resources if not already present"""
@@ -69,53 +54,57 @@ def download_nltk_resources():
         st.warning(f"Error downloading NLTK resources: {str(e)}")
 
 def preprocess_text(text):
-    """Preprocess text for sentiment analysis"""
+    """Preprocess text for sentiment analysis with optimized performance"""
     try:
-        # Convert to string and lowercase
+        # Convert to lowercase and ensure string type
         text = str(text).lower()
         
-        # Remove URLs
-        text = re.sub(r'https?://\S+|www\.\S+', '', text)
+        # Combine regex operations to reduce passes
+        text = re.sub(r'http\S+|www\S+|https\S+|@\w+|\#\w+|[^a-zA-Z\s]', ' ', text)
         
-        # Remove mentions and hashtags
-        text = re.sub(r'@\w+|#\w+', '', text)
+        # Split by whitespace (faster than formal tokenization)
+        tokens = text.split()
         
-        # Remove punctuation and numbers
-        text = re.sub(r'[^\w\s]', ' ', text)
-        text = re.sub(r'\d+', '', text)
+        # Use set lookup for stopwords (O(1) complexity)
+        try:
+            stop_words = set(stopwords.words('english'))
+            tokens = [word for word in tokens if word not in stop_words and len(word) > 2]
+        except:
+            pass
         
-        # Remove extra whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
+        # Optional: lemmatize only if needed for accuracy
+        # This is expensive, so consider skipping for performance
+        if len(tokens) > 0:
+            try:
+                lemmatizer = WordNetLemmatizer()
+                # Process in batches
+                BATCH_SIZE = 1000
+                lemmatized_tokens = []
+                for i in range(0, len(tokens), BATCH_SIZE):
+                    batch = tokens[i:i+BATCH_SIZE]
+                    lemmatized_tokens.extend([lemmatizer.lemmatize(word) for word in batch])
+                tokens = lemmatized_tokens
+            except:
+                pass
+        
+        # Join tokens back into text
+        text = ' '.join(tokens)
         
         return text
     except Exception as e:
-        print(f"Error preprocessing text: {str(e)}")
-        return text  # Return original text on error
+        # Return original text if preprocessing fails
+        print(f"Text preprocessing error: {str(e)}. Using original text.")
+        return str(text)
 
 def train_sentiment_model():
-    """Train a sentiment analysis model on multiple datasets and store in Firebase"""
+    """Train a sentiment analysis model on multiple datasets"""
     if st.session_state.sentiment_model is not None:
         return st.session_state.sentiment_model, st.session_state.vectorizer
-    
-    # Try to load pre-trained model from Firebase
-    model, vectorizer = load_sentiment_model()
-    if model is not None and vectorizer is not None:
-        # Store model in session state
-        st.session_state.sentiment_model = model
-        st.session_state.vectorizer = vectorizer
-        return model, vectorizer
     
     # Initialize a combined dataframe
     combined_df = None
     
     try:
-        # Check if datasets exist locally, if not, download from Firebase
-        if not os.path.exists(TWITTER_DATA_PATH):
-            download_dataset("twitter_training.csv", TWITTER_DATA_PATH)
-        
-        if not os.path.exists(REVIEWS_DATA_PATH):
-            download_dataset("Reviews.csv", REVIEWS_DATA_PATH)
-        
         # Process Twitter data with smaller sample limit for faster loading
         twitter_df = process_twitter_dataset(display_info=False, sample_limit=5000)
         
@@ -151,378 +140,867 @@ def train_sentiment_model():
         st.session_state.sentiment_model = model
         st.session_state.vectorizer = vectorizer
         
-        # Save model to Firebase
-        save_sentiment_model(model, vectorizer)
-        
         return model, vectorizer
     except Exception as e:
         print(f"Error training sentiment model: {str(e)}")
         return None, None
 
-def process_twitter_dataset(display_info=True, sample_limit=None):
-    """Process the Twitter dataset for sentiment analysis"""
+def process_twitter_dataset(display_info=False, sample_limit=None):
+    """Process Twitter dataset for sentiment analysis with optimized loading"""
     try:
-        # Check if dataset exists locally, if not, download from Firebase
-        if not os.path.exists(TWITTER_DATA_PATH):
-            download_dataset("twitter_training.csv", TWITTER_DATA_PATH)
-            
-        # Check if file exists after attempted download
-        if not os.path.exists(TWITTER_DATA_PATH):
-            if display_info:
-                st.error("Twitter dataset not found and could not be downloaded from Firebase.")
-            return None
-            
-        # Load the Twitter dataset
-        encodings = ['utf-8', 'latin1', 'ISO-8859-1']
-        for encoding in encodings:
-            try:
-                twitter_df = pd.read_csv(TWITTER_DATA_PATH, encoding=encoding)
+        # Define possible file paths
+        file_paths = [
+            TWITTER_DATA_PATH,
+            os.path.join('sample_data', 'twitter_sample.csv')
+        ]
+        
+        # Try each path
+        twitter_path = None
+        for path in file_paths:
+            if os.path.exists(path):
+                twitter_path = path
                 break
-            except UnicodeDecodeError:
-                continue
-        else:
+                
+        if twitter_path is None:
             if display_info:
-                st.error("Failed to decode Twitter dataset with available encodings.")
+                st.warning(f"Twitter dataset file not found in any of the expected locations.")
+            return None
+            
+        # Quick approach for very fast loading with head() when sample is small
+        if sample_limit and sample_limit <= 5000:
+            try:
+                # Try simple head() approach first (much faster)
+                df = pd.read_csv(twitter_path, header=None if twitter_path.endswith('twitter_training.csv') else 0, 
+                               encoding='utf-8', nrows=sample_limit, low_memory=False)
+            except:
+                try:
+                    df = pd.read_csv(twitter_path, header=None if twitter_path.endswith('twitter_training.csv') else 0, 
+                                   encoding='latin1', nrows=sample_limit, low_memory=False)
+                except Exception as e:
+                    if display_info:
+                        st.error(f"Failed to load Twitter dataset: {str(e)}")
+                    return None
+        else:
+            # Original sampling approach for larger samples
+            try:
+                if sample_limit:
+                    # Count lines for sampling
+                    with open(twitter_path, 'rb') as f:
+                        approx_lines = sum(1 for _ in f) - 1  # Exclude header
+                    
+                    # Calculate skiprows for random sampling
+                    if approx_lines > sample_limit:
+                        skiprows = sorted(random.sample(range(1, approx_lines + 1), 
+                                                      approx_lines - sample_limit))
+                        df = pd.read_csv(twitter_path, header=None if twitter_path.endswith('twitter_training.csv') else 0, 
+                                       encoding='utf-8', skiprows=skiprows, low_memory=False)
+                    else:
+                        df = pd.read_csv(twitter_path, header=None if twitter_path.endswith('twitter_training.csv') else 0, 
+                                       encoding='utf-8', low_memory=False)
+                else:
+                    df = pd.read_csv(twitter_path, header=None if twitter_path.endswith('twitter_training.csv') else 0, 
+                                   encoding='utf-8', low_memory=False)
+            except:
+                try:
+                    if sample_limit:
+                        # Count lines for sampling
+                        with open(twitter_path, 'rb') as f:
+                            approx_lines = sum(1 for _ in f) - 1  # Exclude header
+                        
+                        # Calculate skiprows for random sampling
+                        if approx_lines > sample_limit:
+                            skiprows = sorted(random.sample(range(1, approx_lines + 1), 
+                                                          approx_lines - sample_limit))
+                            df = pd.read_csv(twitter_path, header=None if twitter_path.endswith('twitter_training.csv') else 0, 
+                                           encoding='latin1', skiprows=skiprows, low_memory=False)
+                        else:
+                            df = pd.read_csv(twitter_path, header=None if twitter_path.endswith('twitter_training.csv') else 0, 
+                                           encoding='latin1', low_memory=False)
+                    else:
+                        df = pd.read_csv(twitter_path, header=None if twitter_path.endswith('twitter_training.csv') else 0, 
+                                       encoding='latin1', low_memory=False)
+                except Exception as e:
+                    if display_info:
+                        st.error(f"Failed to load Twitter dataset: {str(e)}")
+                    return None
+        
+        # Display dataset info if needed
+        if display_info:
+            st.info(f"Loaded Twitter dataset from {twitter_path} with {len(df)} rows")
+        
+        # Handle different column names based on the file used
+        if twitter_path.endswith('twitter_sample.csv'):
+            # Sample file already has headers
+            if 'ID' in df.columns and 'Sentiment' in df.columns and 'Text' in df.columns:
+                # Rename to match expected format
+                df.rename(columns={'ID': 'ID'}, inplace=True)
+            else:
+                if display_info:
+                    st.warning("Twitter sample dataset doesn't have the expected format.")
+                return None
+        else:
+            # Original dataset needs column names
+            # Assign column names based on number of columns
+            if len(df.columns) >= 4:
+                df.columns = ['ID', 'Topic', 'Sentiment', 'Text'] + [f'Extra_{i}' for i in range(len(df.columns) - 4)]
+            elif len(df.columns) == 3:
+                df.columns = ['ID', 'Sentiment', 'Text']
+            else:
+                if display_info:
+                    st.warning("Twitter dataset doesn't have the expected format.")
+                return None
+        
+        # Map sentiments to numerical values
+        sentiment_map = {
+            'Positive': 1,
+            'Negative': -1,
+            'Neutral': 0
+        }
+        
+        # Convert sentiment to numerical values
+        df['SentimentScore'] = df['Sentiment'].map(sentiment_map)
+        
+        # Check if we have valid sentiment scores
+        if df['SentimentScore'].isna().all():
+            if display_info:
+                st.warning("Could not map sentiment values in Twitter dataset.")
             return None
         
-        # Sample data if requested (for faster processing)
-        if sample_limit and len(twitter_df) > sample_limit:
-            twitter_df = twitter_df.sample(n=sample_limit, random_state=42)
+        # Drop rows with NaN sentiment scores
+        df = df.dropna(subset=['SentimentScore'])
         
-        # Map sentiment to numerical values (0 = negative, 1 = neutral, 2 = positive)
-        sentiment_map = {'negative': 0, 'neutral': 1, 'positive': 2}
-        twitter_df['SentimentScore'] = twitter_df['sentiment'].map(sentiment_map)
+        if len(df) == 0:
+            if display_info:
+                st.warning("No valid sentiment data available in Twitter dataset.")
+            return None
         
-        # Text preprocessing
-        twitter_df['ProcessedText'] = twitter_df['text'].astype(str).apply(preprocess_text)
+        # Simple preprocess for faster initial load
+        processed_texts = []
+        for text in df['Text']:
+            try:
+                # Simplified preprocessing for speed
+                text = str(text).lower()
+                text = re.sub(r'[^a-zA-Z\s]', ' ', text)
+                text = ' '.join([w for w in text.split() if len(w) > 2])
+                processed_texts.append(text)
+            except:
+                processed_texts.append("")
+                
+        df['ProcessedText'] = processed_texts
         
-        if display_info:
-            st.info(f"Twitter dataset processed: {len(twitter_df)} rows")
-            st.write("Sentiment distribution:")
-            sentiment_counts = twitter_df['sentiment'].value_counts()
-            st.write(sentiment_counts)
-            
-        return twitter_df[['ProcessedText', 'SentimentScore']]
+        return df
     except Exception as e:
         if display_info:
             st.error(f"Error processing Twitter dataset: {str(e)}")
-        print(f"Error processing Twitter dataset: {str(e)}")
         return None
 
-def process_reviews_dataset(display_info=True, sample_limit=None):
-    """Process the Reviews dataset for sentiment analysis"""
+def process_reviews_dataset(display_info=False, sample_limit=None):
+    """Process Reviews dataset for sentiment analysis with optimized processing"""
     try:
-        # Check if dataset exists locally, if not, download from Firebase
-        if not os.path.exists(REVIEWS_DATA_PATH):
-            download_dataset("Reviews.csv", REVIEWS_DATA_PATH)
-            
-        # Check if file exists after attempted download
-        if not os.path.exists(REVIEWS_DATA_PATH):
-            if display_info:
-                st.error("Reviews dataset not found and could not be downloaded from Firebase.")
-            return None
-            
-        # Load the Reviews dataset
-        encodings = ['utf-8', 'latin1', 'ISO-8859-1']
-        for encoding in encodings:
-            try:
-                reviews_df = pd.read_csv(REVIEWS_DATA_PATH, encoding=encoding)
+        # Define possible file paths
+        file_paths = [
+            REVIEWS_DATA_PATH,
+            os.path.join('sample_data', 'Reviews_sample.csv')
+        ]
+        
+        # Try each path
+        reviews_path = None
+        for path in file_paths:
+            if os.path.exists(path):
+                reviews_path = path
                 break
-            except UnicodeDecodeError:
-                continue
+                
+        if reviews_path is None:
+            if display_info:
+                st.warning(f"Reviews dataset file not found in any of the expected locations.")
+            return None
+        
+        # Quick approach for very fast loading with head() when sample is small
+        if sample_limit and sample_limit <= 5000:
+            try:
+                # Try simple head() approach first (much faster)
+                df = pd.read_csv(reviews_path, encoding='utf-8', nrows=sample_limit)
+            except:
+                try:
+                    df = pd.read_csv(reviews_path, encoding='latin1', nrows=sample_limit)
+                except Exception as e:
+                    if display_info:
+                        st.error(f"Failed to load Reviews dataset: {str(e)}")
+                    return None
         else:
-            if display_info:
-                st.error("Failed to decode Reviews dataset with available encodings.")
-            return None
+            # Original sampling approach for larger samples
+            try:
+                if sample_limit:
+                    # Count lines for sampling
+                    with open(reviews_path, 'rb') as f:
+                        approx_lines = sum(1 for _ in f) - 1  # Exclude header
+                    
+                    # Calculate skiprows for random sampling
+                    if approx_lines > sample_limit:
+                        skiprows = sorted(random.sample(range(1, approx_lines + 1), 
+                                                      approx_lines - sample_limit))
+                        df = pd.read_csv(reviews_path, encoding='utf-8', skiprows=skiprows)
+                    else:
+                        df = pd.read_csv(reviews_path, encoding='utf-8')
+                else:
+                    df = pd.read_csv(reviews_path, encoding='utf-8')
+            except:
+                try:
+                    if sample_limit:
+                        # Count lines for sampling
+                        with open(reviews_path, 'rb') as f:
+                            approx_lines = sum(1 for _ in f) - 1  # Exclude header
+                        
+                        # Calculate skiprows for random sampling
+                        if approx_lines > sample_limit:
+                            skiprows = sorted(random.sample(range(1, approx_lines + 1), 
+                                                          approx_lines - sample_limit))
+                            df = pd.read_csv(reviews_path, encoding='latin1', skiprows=skiprows)
+                        else:
+                            df = pd.read_csv(reviews_path, encoding='latin1')
+                    else:
+                        df = pd.read_csv(reviews_path, encoding='latin1')
+                except Exception as e:
+                    if display_info:
+                        st.error(f"Failed to load Reviews dataset: {str(e)}")
+                    return None
         
-        # Check if 'Score' column exists
-        if 'Score' not in reviews_df.columns:
-            if display_info:
-                st.error("Reviews dataset does not contain expected 'Score' column.")
-            return None
-        
-        # Sample data if requested (for faster processing)
-        if sample_limit and len(reviews_df) > sample_limit:
-            reviews_df = reviews_df.sample(n=sample_limit, random_state=42)
-        
-        # Map ratings to sentiment (1-2 = negative, 3 = neutral, 4-5 = positive)
-        def map_score_to_sentiment(score):
-            if score <= 2:
-                return 0  # negative
-            elif score == 3:
-                return 1  # neutral
-            else:
-                return 2  # positive
-        
-        reviews_df['SentimentScore'] = reviews_df['Score'].apply(map_score_to_sentiment)
-        
-        # Text preprocessing - combine Text and Summary if both exist
-        if 'Text' in reviews_df.columns and 'Summary' in reviews_df.columns:
-            reviews_df['CombinedText'] = reviews_df['Summary'].astype(str) + " " + reviews_df['Text'].astype(str)
-        elif 'Text' in reviews_df.columns:
-            reviews_df['CombinedText'] = reviews_df['Text'].astype(str)
-        elif 'Summary' in reviews_df.columns:
-            reviews_df['CombinedText'] = reviews_df['Summary'].astype(str)
-        else:
-            if display_info:
-                st.error("Reviews dataset does not contain expected text columns.")
-            return None
-        
-        reviews_df['ProcessedText'] = reviews_df['CombinedText'].apply(preprocess_text)
-        
+        # Display dataset info if needed
         if display_info:
-            st.info(f"Reviews dataset processed: {len(reviews_df)} rows")
-            st.write("Sentiment distribution:")
-            sentiment_counts = reviews_df['SentimentScore'].value_counts()
-            st.write(sentiment_counts)
-            
-        return reviews_df[['ProcessedText', 'SentimentScore']]
+            st.info(f"Loaded Reviews dataset from {reviews_path} with {len(df)} rows")
+        
+        # Check if the dataset has the required columns
+        if 'Score' not in df.columns or 'Text' not in df.columns:
+            if display_info:
+                st.warning("Reviews dataset doesn't have the required columns (Score, Text).")
+            return None
+        
+        # Map scores to sentiment categories
+        df['Sentiment'] = df['Score'].apply(lambda x: 'Positive' if x > 3 else ('Neutral' if x == 3 else 'Negative'))
+        
+        # Map sentiments to numerical values for model training
+        sentiment_map = {
+            'Positive': 1,
+            'Negative': -1,
+            'Neutral': 0
+        }
+        
+        # Convert sentiment to numerical values
+        df['SentimentScore'] = df['Sentiment'].map(sentiment_map)
+        
+        # Simple preprocess for faster initial load
+        processed_texts = []
+        for text in df['Text']:
+            try:
+                # Simplified preprocessing for speed
+                text = str(text).lower()
+                text = re.sub(r'[^a-zA-Z\s]', ' ', text)
+                text = ' '.join([w for w in text.split() if len(w) > 2])
+                processed_texts.append(text)
+            except:
+                processed_texts.append("")
+        
+        df['ProcessedText'] = processed_texts
+        
+        return df
     except Exception as e:
         if display_info:
             st.error(f"Error processing Reviews dataset: {str(e)}")
-        print(f"Error processing Reviews dataset: {str(e)}")
         return None
 
+def analyze_sentiment_with_model(text, model=None, vectorizer=None):
+    """Analyze sentiment using trained model or fallback to TextBlob"""
+    if model is not None and vectorizer is not None:
+        try:
+            # Preprocess the text
+            processed_text = preprocess_text(text)
+            
+            # Transform text using vectorizer
+            text_vec = vectorizer.transform([processed_text])
+            
+            # Predict sentiment
+            sentiment_score = model.predict(text_vec)[0]
+            
+            return sentiment_score
+        except Exception as e:
+            st.warning(f"Custom model error: {e}. Falling back to TextBlob.")
+            # Fallback to TextBlob
+            return TextBlob(text).sentiment.polarity
+    else:
+        # Use TextBlob if no model is available
+        return TextBlob(text).sentiment.polarity
+
+def init_database():
+    """Initialize SQLite database for storing conversation and sentiment data"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Create tables if they don't exist
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS conversations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT,
+        user_message TEXT,
+        ai_response TEXT,
+        sentiment_score REAL
+    )
+    ''')
+    
+    # Create table for therapeutic responses
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS therapeutic_responses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sentiment_category TEXT,
+        response_template TEXT
+    )
+    ''')
+    
+    # Check if we already have therapeutic responses
+    cursor.execute("SELECT COUNT(*) FROM therapeutic_responses")
+    count = cursor.fetchone()[0]
+    
+    # If no responses exist, populate with default responses
+    if count == 0:
+        responses = [
+            # Very negative responses
+            ("very_negative", "I can see that you're going through a really difficult time. It's brave of you to share these feelings."),
+            ("very_negative", "I'm sorry to hear you're feeling this way. These emotions are challenging, but you're not alone in facing them."),
+            ("very_negative", "That sounds incredibly hard. Would it help to talk more about what specifically is causing these feelings?"),
+            ("very_negative", "When you're experiencing such intense emotions, it can be overwhelming. Let's take it one step at a time."),
+            ("very_negative", "I'm here to listen. Sometimes just expressing these difficult feelings can be a first step toward managing them."),
+            
+            # Somewhat negative responses
+            ("somewhat_negative", "It sounds like things have been tough lately. What small thing might bring you a moment of peace today?"),
+            ("somewhat_negative", "I'm noticing some difficult emotions in what you're sharing. What has helped you cope with similar feelings in the past?"),
+            ("somewhat_negative", "Sometimes we can feel stuck in negative feelings. Can we explore what might help shift your perspective?"),
+            ("somewhat_negative", "Those feelings are valid. Would it help to discuss some strategies for managing them when they arise?"),
+            ("somewhat_negative", "I appreciate you sharing these thoughts. What do you think triggered these feelings?"),
+            
+            # Neutral responses
+            ("neutral", "Tell me more about your situation. I'm here to listen and support you."),
+            ("neutral", "How long have you been feeling this way? Understanding the timeline might help us explore this further."),
+            ("neutral", "I'm curious about what prompted you to reach out today?"),
+            ("neutral", "Sometimes talking through our thoughts can help bring clarity. Is there a specific area you'd like to focus on?"),
+            ("neutral", "Everyone's experience is unique. Could you share more about what this means for you personally?"),
+            
+            # Somewhat positive responses
+            ("somewhat_positive", "I'm glad to hear there are some positive aspects to your situation. Let's build on those."),
+            ("somewhat_positive", "It sounds like you're making progress. What do you think has contributed to these positive changes?"),
+            ("somewhat_positive", "I notice a bit of optimism in your message. How can we nurture that feeling?"),
+            ("somewhat_positive", "That's a really insightful observation. How does recognizing this make you feel?"),
+            ("somewhat_positive", "It seems like you're developing some helpful perspective. What else might support your continued growth?"),
+            
+            # Very positive responses
+            ("very_positive", "It's wonderful to hear you're feeling so positive! What's contributed most to this uplifted state?"),
+            ("very_positive", "Your positivity is inspiring. How can you use this energy to support your continued well-being?"),
+            ("very_positive", "These positive feelings are something to celebrate. How might you sustain this momentum?"),
+            ("very_positive", "I'm really happy to hear things are going well. What personal strengths have helped you reach this point?"),
+            ("very_positive", "That's excellent progress! What lessons from this success might help you in other areas of your life?")
+        ]
+        
+        cursor.executemany("INSERT INTO therapeutic_responses (sentiment_category, response_template) VALUES (?, ?)", responses)
+    
+    conn.commit()
+    conn.close()
+
 def analyze_sentiment(text):
-    """Analyze sentiment of text using trained model or get from Firebase if not trained yet"""
-    try:
-        # Get or train sentiment model
-        model, vectorizer = train_sentiment_model()
-        
-        if model is None or vectorizer is None:
-            return 'neutral', 0.5  # Default if model not available
-        
-        # Preprocess the text
-        processed_text = preprocess_text(text)
-        
-        # Transform text using vectorizer
-        text_vectorized = vectorizer.transform([processed_text])
-        
-        # Predict sentiment
-        sentiment_score = model.predict(text_vectorized)[0]
-        
-        # Map numerical score to text sentiment
-        if sentiment_score == 0:
-            sentiment = 'negative'
-            score_normalized = 0.25  # Normalized score for visualization
-        elif sentiment_score == 1:
-            sentiment = 'neutral'
-            score_normalized = 0.5
-        else:  # sentiment_score == 2
-            sentiment = 'positive'
-            score_normalized = 0.75
-            
-        return sentiment, score_normalized
-    except Exception as e:
-        print(f"Error analyzing sentiment: {str(e)}")
-        return 'neutral', 0.5  # Default fallback
-
-def generate_response(prompt, chat_history):
-    """Generate response using Gemini or get therapeutic response from Firebase based on sentiment"""
-    try:
-        # Analyze sentiment of user's message
-        sentiment, _ = analyze_sentiment(prompt)
-        
-        # Try to get a therapeutic response from Firebase based on sentiment
-        therapeutic_response = get_therapeutic_response(sentiment)
-        
-        # If we have a therapeutic response and it's appropriate (20% chance), use it
-        if therapeutic_response and random.random() < 0.2:
-            return therapeutic_response
-        
-        # Otherwise use Gemini API
-        if GEMINI_API_KEY:
-            # Format the chat history for the model
-            formatted_history = []
-            for message in chat_history:
-                role = "user" if message["role"] == "user" else "model"
-                formatted_history.append({"role": role, "parts": [message["content"]]})
-            
-            # Add the current prompt
-            formatted_history.append({"role": "user", "parts": [prompt]})
-            
-            # Set up the model with custom parameters
-            model = genai.GenerativeModel(
-                model_name="gemini-pro",
-                generation_config={
-                    "temperature": 0.7,
-                    "top_p": 0.95,
-                    "top_k": 40,
-                    "max_output_tokens": 800,
-                },
-                safety_settings=[
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                ],
-            )
-            
-            # Generate response
-            response = model.generate_content(formatted_history)
-            return response.text
-        else:
-            # Fallback to therapeutic responses if API key is not available
-            if therapeutic_response:
-                return therapeutic_response
-            else:
-                return "I'm here to listen and help. Could you tell me more about what you're feeling?"
-    except Exception as e:
-        print(f"Error generating response: {str(e)}")
-        return "I'm having trouble processing that. Let's take a step back. How are you feeling right now?"
-
-def handle_chat_input():
-    """Handle chat input from the user"""
-    # Get user input
-    user_input = st.chat_input("Type your message here...")
+    """Analyze sentiment of text efficiently with caching for repeated phrases"""
+    # Check if we've analyzed this exact text before (simple cache)
+    if not hasattr(analyze_sentiment, "cache"):
+        analyze_sentiment.cache = {}
     
-    # Process user input
-    if user_input:
-        # Add user message to chat history
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        
-        # Generate AI response
-        with st.spinner("Thinking..."):
-            response = generate_response(user_input, st.session_state.messages)
-        
-        # Add AI response to chat history
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        
-        # Save conversation to Firebase
-        save_conversation(
-            st.session_state.chat_id,
-            st.session_state.messages[-2]["content"],  # User message
-            st.session_state.messages[-1]["content"],  # AI response
-            analyze_sentiment(user_input)[0]  # Sentiment of user message
-        )
-
-def display_chat():
-    """Display the chat interface"""
-    # Display chat messages
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
+    # Check cache first (for common greetings/phrases)
+    if text in analyze_sentiment.cache:
+        return analyze_sentiment.cache[text]
     
-    # Handle user input
-    handle_chat_input()
+    model = st.session_state.sentiment_model
+    vectorizer = st.session_state.vectorizer
+    
+    result = analyze_sentiment_with_model(text, model, vectorizer)
+    
+    # Store in cache if text is relatively short (to avoid memory bloat)
+    if len(text) < 100:
+        analyze_sentiment.cache[text] = result
+    
+    return result
 
-def is_mobile_device():
-    """Detect if user is on a mobile device using user-agent"""
-    try:
-        user_agent = st.get_complex_state()['request']['headers']['User-Agent']
-        mobile_patterns = ['Android', 'webOS', 'iPhone', 'iPad', 'iPod', 'BlackBerry', 'IEMobile', 'Opera Mini']
-        return any(pattern in user_agent for pattern in mobile_patterns)
-    except:
-        # If we can't detect, default to desktop
-        return False
+def get_sentiment_label(score):
+    """Convert sentiment score to human-readable label"""
+    if score > 0.3:
+        return "Very Positive"
+    elif score > 0:
+        return "Somewhat Positive"
+    elif score == 0:
+        return "Neutral"
+    elif score > -0.3:
+        return "Somewhat Negative"
+    else:
+        return "Very Negative"
 
-def main():
-    """Main function to run the application"""
-    # Set page config
-    st.set_page_config(
-        page_title=APP_TITLE,
-        page_icon="💭",
-        layout="wide",
-        initial_sidebar_state="expanded" if not is_mobile_device() else "collapsed"
+def get_sentiment_category(score):
+    """Convert sentiment score to category for database"""
+    if score > 0.3:
+        return "very_positive"
+    elif score > 0:
+        return "somewhat_positive"
+    elif score == 0:
+        return "neutral"
+    elif score > -0.3:
+        return "somewhat_negative"
+    else:
+        return "very_negative"
+
+def save_conversation(user_message, ai_response, sentiment_score):
+    """Save conversation to database"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    timestamp = datetime.datetime.now().isoformat()
+    
+    cursor.execute(
+        "INSERT INTO conversations (timestamp, user_message, ai_response, sentiment_score) VALUES (?, ?, ?, ?)",
+        (timestamp, user_message, ai_response, sentiment_score)
     )
     
-    # Initialize app and database
-    initialize_app()
+    conn.commit()
+    conn.close()
+
+def get_therapeutic_response(sentiment_score):
+    """Get a therapeutic response based on sentiment as fallback"""
+    sentiment_category = get_sentiment_category(sentiment_score)
     
-    # Add CSS to hide sidebar on mobile
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Get all responses for the sentiment category
+    cursor.execute(
+        "SELECT response_template FROM therapeutic_responses WHERE sentiment_category = ?",
+        (sentiment_category,)
+    )
+    
+    responses = cursor.fetchall()
+    conn.close()
+    
+    if responses:
+        # Choose a random response from matching category
+        return random.choice(responses)[0]
+    else:
+        # Fallback response
+        return "I'm here to listen and support you. Please tell me more about how you're feeling."
+
+def format_conversation_for_gemini(messages):
+    """Format the conversation history for Gemini API - optimized version"""
+    system_message = None
+    
+    # Extract system message if present
+    if messages and messages[0]["role"] == "system":
+        system_message = messages[0]["content"]
+        messages = messages[1:]
+    
+    # Use string builder pattern for better performance
+    conversation_parts = []
+    
+    if system_message:
+        conversation_parts.append(f"System instructions: {system_message}\n\n")
+    
+    # Only include the last 5 messages to reduce token count
+    message_limit = min(len(messages), 5)
+    for msg in messages[-message_limit:]:
+        if msg["role"] == "user":
+            conversation_parts.append(f"User: {msg['content']}\n")
+        elif msg["role"] == "assistant":
+            conversation_parts.append(f"Assistant: {msg['content']}\n")
+    
+    # Add final prompt for the assistant to respond
+    conversation_parts.append("Assistant: ")
+    
+    return ''.join(conversation_parts)
+
+def call_gemini_api(messages):
+    """Call Gemini API with the conversation history - optimized version"""
+    try:
+        # Format conversation for Gemini
+        conversation_text = format_conversation_for_gemini(messages)
+        
+        # Prepare the request payload with more efficient settings
+        payload = {
+            "contents": [{
+                "parts": [{"text": conversation_text}]
+            }],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 300,  # Reduced for faster response
+                "topK": 40,
+                "topP": 0.95
+            }
+        }
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        # Add timeout for API call
+        response = requests.post(GEMINI_API_URL, headers=headers, json=payload, timeout=10)
+        response.raise_for_status()
+        
+        # Extract the generated text from the response
+        response_json = response.json()
+        if 'candidates' in response_json and len(response_json['candidates']) > 0:
+            generated_text = response_json['candidates'][0]['content']['parts'][0]['text']
+            return generated_text
+        else:
+            raise ValueError("No response content found in API response")
+            
+    except Exception as e:
+        print(f"Error calling Gemini API: {str(e)}")
+        # Use local fallback if API fails - more efficient version
+        sentiment_score = analyze_sentiment(messages[-1]["content"])
+        return get_therapeutic_response(sentiment_score)
+
+def analyze_sentiment_trend(conversation_history):
+    """Analyze the trend of sentiment scores in the conversation history"""
+    # Get sentiment scores from the last few exchanges
+    recent_scores = [msg.get("sentiment", 0) for msg in conversation_history[-6:] if msg["role"] == "user"]
+    
+    if len(recent_scores) < 2:
+        return "stable"
+    
+    # Calculate the overall trend
+    if recent_scores[-1] > recent_scores[0] + 0.1:
+        return "improving"
+    elif recent_scores[-1] < recent_scores[0] - 0.1:
+        return "declining"
+    elif max(recent_scores) - min(recent_scores) > 0.3:
+        return "fluctuating"
+    else:
+        return "stable"
+
+def generate_therapeutic_system_prompt(sentiment_score):
+    """Generate system prompt for the AI to act as a therapist"""
+    sentiment_category = get_sentiment_category(sentiment_score)
+    
+    base_prompt = """You are Therapy AI, a compassionate and empathetic AI therapist.
+Your goal is to provide supportive, thoughtful responses to users who are seeking emotional support or guidance.
+- Listen carefully and validate users' feelings
+- Ask thoughtful questions to better understand their situation
+- Provide gentle guidance without being judgmental
+- Suggest practical coping strategies when appropriate
+- Maintain a warm, supportive tone throughout the conversation
+- Never claim to diagnose medical conditions or replace professional healthcare
+- If someone is in crisis, suggest they contact emergency services or crisis hotlines
+"""
+    
+    # Add sentiment-specific guidance
+    if sentiment_category == "very_negative":
+        base_prompt += """The user appears to be expressing very negative emotions right now.
+- Respond with extra empathy and validation
+- Acknowledge the difficulty of their situation
+- Be especially gentle and supportive
+- Focus on immediate coping strategies if appropriate
+- Make sure they know they're not alone in these feelings"""
+    elif sentiment_category == "somewhat_negative":
+        base_prompt += """The user appears to be expressing somewhat negative emotions.
+- Validate their feelings while gently exploring potential perspectives
+- Help them identify small steps that might improve their situation
+- Balance acknowledgment of difficulties with encouragement"""
+    elif sentiment_category == "neutral":
+        base_prompt += """The user's emotions appear neutral at the moment.
+- Ask thoughtful questions to better understand their situation
+- Help them explore their thoughts and feelings more deeply
+- Provide a balanced perspective in your responses"""
+    elif sentiment_category == "somewhat_positive":
+        base_prompt += """The user appears to be expressing somewhat positive emotions.
+- Reinforce and build upon these positive elements
+- Explore how these positive aspects might be expanded
+- Help them identify what's working well and why"""
+    elif sentiment_category == "very_positive":
+        base_prompt += """The user appears to be expressing very positive emotions.
+- Celebrate their positive state
+- Help them reflect on what contributed to these feelings
+- Discuss how they might maintain this positive momentum"""
+    
+    return {"role": "system", "content": base_prompt}
+
+def main():
+    # Configure app FIRST - must be the first Streamlit command
+    st.set_page_config(
+        page_title=APP_TITLE,
+        page_icon="💬",
+        layout="wide",
+        initial_sidebar_state="expanded"  # Default to expanded for desktop
+    )
+    
+    # Detect if on mobile device
+    is_mobile_view = False
+    
+    # Add mobile detection with CSS to completely hide sidebar on mobile
     st.markdown("""
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        if (window.innerWidth < 768) {
+            // Force hide sidebar on mobile devices
+            const style = document.createElement('style');
+            style.textContent = `
+                [data-testid="stSidebar"] {display: none !important;}
+                [data-testid="collapsedControl"] {display: none !important;}
+                .main .block-container {max-width: 100% !important; padding: 1rem !important;}
+            `;
+            document.head.appendChild(style);
+        }
+    });
+    </script>
+    
     <style>
+    /* Base styling */
+    .block-container {padding-top: 1rem; padding-bottom: 1rem;}
+    
+    /* Welcome message styling */
+    .welcome-message {
+        font-size: 1.3rem; 
+        color: #4CAF50; 
+        margin-bottom: 20px;
+        text-align: center;
+        font-weight: 500;
+    }
+    
+    /* Style improvements for chat interface */
+    .stChatMessage {
+        background-color: #f0f2f6 !important;
+        border-radius: 10px !important;
+        margin-bottom: 0.5rem !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.1) !important;
+        padding: 0.75rem !important;
+    }
+    
+    /* User messages vs AI messages */
+    .stChatMessage[data-testid="stChatMessage-USER"] {
+        background-color: #E3F2FD !important;
+    }
+    
+    .stChatMessage[data-testid="stChatMessage-ASSISTANT"] {
+        background-color: #F1F8E9 !important;
+    }
+    
+    /* Ensure text messages have proper color contrast */
+    .stChatMessage p, .stChatMessage div, .stChatMessage span {
+        color: #111 !important;
+    }
+    
+    /* Improve chat input styling */
+    .stChatInputContainer {
+        padding-top: 1rem !important;
+        border-top: 1px solid #e0e0e0 !important;
+    }
+    
+    /* Mobile-specific styling */
     @media (max-width: 768px) {
-        section[data-testid="stSidebar"] {
-            display: none !important;
-        }
-        button[kind="header"] {
-            display: none !important;
-        }
+        /* Completely hide sidebar on mobile */
+        [data-testid="stSidebar"] {display: none !important;}
+        [data-testid="collapsedControl"] {display: none !important;}
+        
+        /* Main content takes full width */
         .main .block-container {
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
             max-width: 100% !important;
-            padding-left: 1rem !important;
-            padding-right: 1rem !important;
-            padding-top: 2rem !important;
+        }
+        .welcome-message {
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+        }
+        .stChatMessage {
+            padding: 0.5rem !important;
         }
     }
     </style>
     """, unsafe_allow_html=True)
     
-    # Add JavaScript to force disable sidebar on mobile
-    st.markdown("""
-    <script>
-    function hideSidebarOnMobile() {
-        if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
-            // Hide sidebar
-            const sidebar = document.querySelector('section[data-testid="stSidebar"]');
-            if (sidebar) sidebar.style.display = 'none';
-            
-            // Hide toggle button
-            const toggleButton = document.querySelector('button[kind="header"]');
-            if (toggleButton) toggleButton.style.display = 'none';
-        }
-    }
-    
-    // Run on page load and also after a short delay to ensure elements are loaded
-    if (document.readyState === 'complete') {
-        hideSidebarOnMobile();
-    } else {
-        window.addEventListener('load', hideSidebarOnMobile);
-    }
-    
-    // Also try after a slight delay to catch any late-loaded elements
-    setTimeout(hideSidebarOnMobile, 500);
-    </script>
-    """, unsafe_allow_html=True)
-    
-    # Set app title and description
+    # Simple header - show first for instant feedback
     st.title(APP_TITLE)
-    st.write(APP_DESCRIPTION)
     
-    # Create sidebar for sentiment visualization (only if not on mobile)
-    if not is_mobile_device():
-        with st.sidebar:
-            st.subheader("Sentiment Analysis")
-            st.write("This shows the sentiment of your messages over time.")
-            
-            if st.button("Train Sentiment Model"):
-                with st.spinner("Training model..."):
-                    model, vectorizer = train_sentiment_model()
-                    if model is not None:
-                        st.success("Model trained successfully!")
-                    else:
-                        st.error("Failed to train model.")
-            
-            # Option to upload datasets to Firebase
-            st.subheader("Dataset Management")
-            
-            upload_twitter = st.button("Upload Twitter Dataset to Firebase")
-            if upload_twitter:
-                with st.spinner("Uploading Twitter dataset..."):
-                    if os.path.exists(TWITTER_DATA_PATH):
-                        success = upload_dataset(TWITTER_DATA_PATH, "twitter_training.csv")
-                        if success:
-                            st.success("Twitter dataset uploaded successfully!")
-                        else:
-                            st.error("Failed to upload Twitter dataset.")
-                    else:
-                        st.error(f"Twitter dataset not found at {TWITTER_DATA_PATH}")
-            
-            upload_reviews = st.button("Upload Reviews Dataset to Firebase")
-            if upload_reviews:
-                with st.spinner("Uploading Reviews dataset..."):
-                    if os.path.exists(REVIEWS_DATA_PATH):
-                        success = upload_dataset(REVIEWS_DATA_PATH, "Reviews.csv")
-                        if success:
-                            st.success("Reviews dataset uploaded successfully!")
-                        else:
-                            st.error("Failed to upload Reviews dataset.")
-                    else:
-                        st.error(f"Reviews dataset not found at {REVIEWS_DATA_PATH}")
+    # Add welcoming message
+    st.markdown('<p class="welcome-message">Hi! there I am here to help you</p>', unsafe_allow_html=True)
     
-    # Display chat interface
-    display_chat()
+    # Initialize GUI components immediately
+    chat_area = st.container()
+    prompt_area = st.empty()
+    
+    # Initialize model in background
+    if "model_loading" not in st.session_state:
+        st.session_state.model_loading = True
+        
+        # Create a thread to load model in background
+        import threading
+        
+        def load_model_in_background():
+            # Download NLTK resources if needed
+            download_nltk_resources()
+            
+            # Initialize database
+            init_database()
+            
+            # Train sentiment model
+            train_sentiment_model()
+            
+            # Mark as loaded
+            st.session_state.model_loading = False
+            st.session_state.model_loaded = True
+        
+        # Start background loading with smaller sample size
+        threading.Thread(target=load_model_in_background).start()
+    
+    # Check for API key only once
+    if not hasattr(st.session_state, "api_checked"):
+        if not GEMINI_API_KEY:
+            st.warning("⚠️ Gemini API Key not found or not set. Using local fallback responses.")
+        st.session_state.api_checked = True
+    
+    # Initialize sentiment visualization in sidebar on desktop only
+    with st.sidebar:
+        st.subheader("Sentiment Analysis")
+        
+        # Show model loading status only if still loading
+        if st.session_state.get("model_loading", True) and not st.session_state.get("model_loaded", False):
+            with st.spinner("Initializing sentiment analysis..."):
+                pass  # Just show the spinner without text
+        
+        # Show sentiment chart if we have data
+        if len(st.session_state.sentiment_history) > 0:
+            # Add visual color indicators for sentiment ranges
+            st.markdown("""
+            <style>
+            .positive-sentiment { color: green; font-weight: bold; }
+            .neutral-sentiment { color: gray; font-weight: bold; }
+            .negative-sentiment { color: red; font-weight: bold; }
+            </style>
+            
+            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                <span class="negative-sentiment">Negative</span>
+                <span class="neutral-sentiment">Neutral</span>
+                <span class="positive-sentiment">Positive</span>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Create well-formatted chart with clear labels
+            recent_sentiments = st.session_state.sentiment_history[-10:] if len(st.session_state.sentiment_history) > 10 else st.session_state.sentiment_history
+            chart_data = pd.DataFrame({"Sentiment": recent_sentiments})
+            
+            # Add custom chart with better formatting
+            st.line_chart(
+                chart_data,
+                use_container_width=True,
+                height=200
+            )
+            
+            # Display metrics in columns for better layout
+            col1, col2 = st.columns(2)
+            
+            # Calculate average sentiment
+            recent_sentiment = st.session_state.sentiment_history[-5:] if len(st.session_state.sentiment_history) >= 5 else st.session_state.sentiment_history
+            avg_sentiment = sum(recent_sentiment) / len(recent_sentiment)
+            
+            with col1:
+                st.metric("Avg Sentiment", f"{avg_sentiment:.2f}", get_sentiment_label(avg_sentiment))
+            
+            with col2:
+                st.metric("Messages", len(st.session_state.messages) // 2)
+            
+            # Show sentiment trend analysis if we have enough data
+            if len(st.session_state.messages) >= 2:
+                trend = analyze_sentiment_trend(st.session_state.messages[-6:] if len(st.session_state.messages) >= 6 else st.session_state.messages)
+                
+                # Use color-coded trend indicators
+                trend_color = {
+                    "improving": "green",
+                    "declining": "red",
+                    "fluctuating": "orange",
+                    "stable": "gray"
+                }.get(trend, "gray")
+                
+                st.markdown(f"<p style='color:{trend_color}'>Recent trend: <b>{trend.capitalize()}</b></p>", unsafe_allow_html=True)
+        else:
+            # Add blank space placeholder for better layout instead of info message
+            st.write("")
+    
+    # Display chat messages with optimized rendering
+    with chat_area:
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
+                
+                # Show sentiment for user messages
+                if message["role"] == "user" and message.get("sentiment") is not None:
+                    sentiment_score = message["sentiment"]
+                    sentiment_label = get_sentiment_label(sentiment_score)
+                    
+                    # Use color based on sentiment
+                    if sentiment_score > 0.3:
+                        color = "green"
+                    elif sentiment_score > 0:
+                        color = "lightgreen"
+                    elif sentiment_score == 0:
+                        color = "gray"
+                    elif sentiment_score > -0.3:
+                        color = "orange"
+                    else:
+                        color = "red"
+                        
+                    st.markdown(f"<span style='color:{color};font-size:0.8em'>Sentiment: {sentiment_label}</span>", unsafe_allow_html=True)
+    
+    # Input for new message
+    prompt = st.chat_input("Type your message here...")
+    if prompt:
+        # Add user message to chat history
+        if st.session_state.get("model_loaded", False):
+            # Use trained model
+            sentiment_score = analyze_sentiment(prompt)
+        else:
+            # Fallback to TextBlob until model is loaded
+            sentiment_score = TextBlob(prompt).sentiment.polarity
+            
+        user_message = {"role": "user", "content": prompt, "sentiment": sentiment_score}
+        st.session_state.messages.append(user_message)
+        st.session_state.sentiment_history.append(sentiment_score)
+        
+        # Display user message
+        with st.chat_message("user"):
+            st.write(prompt)
+            sentiment_label = get_sentiment_label(sentiment_score)
+            
+            # Use color based on sentiment
+            if sentiment_score > 0.3:
+                color = "green"
+            elif sentiment_score > 0:
+                color = "lightgreen"
+            elif sentiment_score == 0:
+                color = "gray"
+            elif sentiment_score > -0.3:
+                color = "orange"
+            else:
+                color = "red"
+                
+            st.markdown(f"<span style='color:{color};font-size:0.8em'>Sentiment: {sentiment_label}</span>", unsafe_allow_html=True)
+        
+        # Prepare messages for API call - only send necessary data
+        api_messages = [generate_therapeutic_system_prompt(sentiment_score)]
+        for msg in st.session_state.messages[-5:]:  # Only use last 5 messages for context
+            if msg.get("sentiment") is not None:
+                # For API calls, remove sentiment data
+                api_messages.append({"role": msg["role"], "content": msg["content"]})
+            else:
+                api_messages.append(msg)
+        
+        # Get and display assistant response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response = call_gemini_api(api_messages)
+                st.write(response)
+        
+        # Add assistant response to chat history
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        
+        # Save conversation to database if model is ready
+        if st.session_state.get("model_loaded", False):
+            save_conversation(prompt, response, sentiment_score)
 
 if __name__ == "__main__":
     main() 
