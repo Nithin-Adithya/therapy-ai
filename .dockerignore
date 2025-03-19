@@ -1,0 +1,16 @@
+.git
+.github
+.gitignore
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+.venv_new
+venv/
+ENV/
+.ipynb_checkpoints
+.DS_Store
+.cache/
+firebase_credentials.json
+push_changes.ps1 

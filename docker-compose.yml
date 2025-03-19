@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  therapy-ai:
+    build: .
+    image: therapy-ai
+    container_name: therapy-ai
+    ports:
+      - "8501:8501"
+    environment:
+      - GEMINI_API_KEY=AIzaSyAEmBsVDxkZPi7FFSW38KMPEA2NYHn10Fs
+    volumes:
+      - ./.cache:/app/.cache
+    restart: unless-stopped 
