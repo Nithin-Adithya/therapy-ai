@@ -23,7 +23,7 @@ A therapeutic chatbot with sentiment analysis powered by Gemini AI. This applica
 
 ## Demo
 
-![Therapy AI Demo](demo_screenshot.png)
+![Therapy AI Demo](Screenshot-therapy-ai-00)
 
 ## Installation
 
