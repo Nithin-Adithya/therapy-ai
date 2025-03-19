@@ -18,16 +18,29 @@ import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
+import dask.dataframe as dd
+from joblib import Memory
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from cachetools import TTLCache, cached
+import asyncio
+import httpx
+from concurrent.futures import ThreadPoolExecutor
+
+# Initialize caching
+cachedir = '.cache'
+memory = Memory(cachedir, verbose=0)
+sentiment_cache = TTLCache(maxsize=1000, ttl=3600)  # Cache for 1 hour
 
 # Load environment variables
 load_dotenv()
 
 # Constants
 APP_TITLE = "Therapy AI"
-APP_DESCRIPTION = "A therapeutic chatbot with sentiment analysis powered by Gemini AI"
+APP_DESCRIPTION = "An AI-powered therapy chatbot that provides emotional support and guidance."
 DB_PATH = "therapy_data.db"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
 TWITTER_DATA_PATH = "twitter_training.csv"
 REVIEWS_DATA_PATH = "Reviews.csv"
 
@@ -44,15 +57,26 @@ if "sentiment_model" not in st.session_state:
 if "vectorizer" not in st.session_state:
     st.session_state.vectorizer = None
 
-def download_nltk_resources():
-    """Download necessary NLTK resources if not already present"""
-    try:
-        nltk.download('punkt')
-        nltk.download('stopwords')
-        nltk.download('wordnet')
-    except Exception as e:
-        st.warning(f"Error downloading NLTK resources: {str(e)}")
+# Initialize device for PyTorch
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# Initialize sentiment model
+tokenizer = None
+model = None
+
+def initialize_sentiment_model():
+    """Initialize the transformer-based sentiment model"""
+    global tokenizer, model
+    try:
+        model_name = "distilbert-base-uncased-finetuned-sst-2-english"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(model_name).to(device)
+        model.eval()
+    except Exception as e:
+        st.error(f"Error loading sentiment model: {str(e)}")
+        return None
+
+@memory.cache
 def preprocess_text(text):
     """Preprocess text for sentiment analysis with optimized performance"""
     try:
@@ -70,79 +94,181 @@ def preprocess_text(text):
             stop_words = set(stopwords.words('english'))
             tokens = [word for word in tokens if word not in stop_words and len(word) > 2]
         except:
-            pass
-        
-        # Optional: lemmatize only if needed for accuracy
-        # This is expensive, so consider skipping for performance
-        if len(tokens) > 0:
-            try:
-                lemmatizer = WordNetLemmatizer()
-                # Process in batches
-                BATCH_SIZE = 1000
-                lemmatized_tokens = []
-                for i in range(0, len(tokens), BATCH_SIZE):
-                    batch = tokens[i:i+BATCH_SIZE]
-                    lemmatized_tokens.extend([lemmatizer.lemmatize(word) for word in batch])
-                tokens = lemmatized_tokens
-            except:
-                pass
+            tokens = [word for word in tokens if len(word) > 2]
         
         # Join tokens back into text
-        text = ' '.join(tokens)
-        
-        return text
+        return ' '.join(tokens)
     except Exception as e:
-        # Return original text if preprocessing fails
         print(f"Text preprocessing error: {str(e)}. Using original text.")
         return str(text)
 
+@memory.cache
+def process_dataset(file_path, sample_limit=None, chunk_size='50MB'):
+    """Process dataset using Dask for better memory efficiency"""
+    try:
+        # Read data using Dask
+        df = dd.read_csv(file_path, 
+                        blocksize=chunk_size,
+                        sample=sample_limit if sample_limit else None,
+                        encoding='utf-8')
+        
+        # Convert to pandas for final processing
+        df = df.compute()
+        
+        # Basic preprocessing
+        df['ProcessedText'] = df['Text'].apply(preprocess_text)
+        
+        return df
+    except Exception as e:
+        print(f"Error processing dataset: {str(e)}")
+        return None
+
+@cached(cache=sentiment_cache)
+def analyze_sentiment_transformer(text):
+    """Analyze sentiment using transformer model with caching"""
+    try:
+        # Tokenize and prepare input
+        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512).to(device)
+        
+        with torch.no_grad():
+            outputs = model(**inputs)
+            predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
+            
+        # Convert prediction to score between -1 and 1
+        score = (predictions[0][1].item() - 0.5) * 2
+        return score
+    except Exception as e:
+        print(f"Transformer model error: {str(e)}. Falling back to TextBlob.")
+        return TextBlob(text).sentiment.polarity
+
+async def call_gemini_api_async(messages):
+    """Asynchronous version of Gemini API call with adaptive response length"""
+    try:
+        conversation_text = format_conversation_for_gemini(messages)
+        
+        # Analyze message length and complexity
+        user_message = messages[-1]["content"] if isinstance(messages, list) else messages["content"]
+        message_length = len(user_message.split())
+        
+        # Adjust max tokens based on message characteristics
+        if message_length < 10:  # Very short message
+            max_tokens = 50  # Brief response
+        elif message_length < 20:  # Short message
+            max_tokens = 100  # Moderate response
+        else:  # Longer or more complex message
+            max_tokens = 300  # Full response if needed
+        
+        payload = {
+            "contents": [{
+                "parts": [{"text": conversation_text}]
+            }],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": max_tokens,
+                "topK": 40,
+                "topP": 0.95,
+                "stopSequences": ["User:", "Assistant:"]  # Prevent generating additional turns
+            }
+        }
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                GEMINI_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=10
+            )
+            response.raise_for_status()
+            
+            response_json = response.json()
+            if 'candidates' in response_json and response_json['candidates']:
+                response_text = response_json['candidates'][0]['content']['parts'][0]['text']
+                # Clean up response
+                response_text = response_text.strip()
+                # Remove any system-style prefixes
+                response_text = re.sub(r'^(Assistant:|Therapy AI:)\s*', '', response_text)
+                return response_text
+            
+        raise ValueError("No response content found in API response")
+            
+    except Exception as e:
+        print(f"Error calling Gemini API: {str(e)}")
+        # Use concise fallback responses
+        sentiment_score = analyze_sentiment_transformer(messages[-1]["content"])
+        return get_therapeutic_response(sentiment_score)
+
+def download_nltk_resources():
+    """Download necessary NLTK resources if not already present"""
+    try:
+        nltk.download('punkt')
+        nltk.download('stopwords')
+        nltk.download('wordnet')
+    except Exception as e:
+        st.warning(f"Error downloading NLTK resources: {str(e)}")
+
 def train_sentiment_model():
-    """Train a sentiment analysis model on multiple datasets"""
+    """Train a sentiment analysis model on multiple datasets with optimized processing"""
     if st.session_state.sentiment_model is not None:
         return st.session_state.sentiment_model, st.session_state.vectorizer
     
-    # Initialize a combined dataframe
-    combined_df = None
-    
     try:
-        # Process Twitter data with smaller sample limit for faster loading
-        twitter_df = process_twitter_dataset(display_info=False, sample_limit=5000)
+        # Process datasets using Dask
+        twitter_df = process_dataset(TWITTER_DATA_PATH, sample_limit=5000)
+        reviews_df = process_dataset(REVIEWS_DATA_PATH, sample_limit=5000)
         
-        # Process Reviews data with smaller sample limit for faster loading
-        reviews_df = process_reviews_dataset(display_info=False, sample_limit=5000)
+        # Combine datasets if available
+        combined_df = pd.concat([df for df in [twitter_df, reviews_df] if df is not None], 
+                              ignore_index=True)
         
-        # Combine datasets if both are available
-        if twitter_df is not None and reviews_df is not None:
-            combined_df = pd.concat([twitter_df, reviews_df], ignore_index=True)
-        elif twitter_df is not None:
-            combined_df = twitter_df
-        elif reviews_df is not None:
-            combined_df = reviews_df
-        else:
+        if combined_df is None or len(combined_df) == 0:
             return None, None
         
-        # Use fewer features for faster training
-        vectorizer = TfidfVectorizer(max_features=2000, 
-                                     min_df=5,
-                                     max_df=0.8,
-                                     sublinear_tf=True)
+        # Use optimized TfidfVectorizer settings
+        vectorizer = TfidfVectorizer(
+            max_features=2000,
+            min_df=5,
+            max_df=0.8,
+            sublinear_tf=True,
+            ngram_range=(1, 2)  # Include bigrams for better context
+        )
+        
+        # Convert to sparse matrix for memory efficiency
         X = vectorizer.fit_transform(combined_df['ProcessedText'])
         y = combined_df['SentimentScore']
         
-        # Split data with smaller test set
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
+        # Train model with optimized settings
+        model = LogisticRegression(
+            max_iter=300,
+            solver='saga',
+            n_jobs=-1,
+            C=1.0,
+            class_weight='balanced'
+        )
         
-        # Train model with faster settings
-        model = LogisticRegression(max_iter=300, solver='saga', n_jobs=-1, C=1.0)
+        # Use smaller test size for faster training
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.1, random_state=42
+        )
+        
+        # Train model
         model.fit(X_train, y_train)
         
-        # Store model and vectorizer in session state
+        # Store in session state
         st.session_state.sentiment_model = model
         st.session_state.vectorizer = vectorizer
         
+        # Initialize transformer model in background
+        with ThreadPoolExecutor() as executor:
+            executor.submit(initialize_sentiment_model)
+        
         return model, vectorizer
+        
     except Exception as e:
-        print(f"Error training sentiment model: {str(e)}")
+        st.error(f"Error training model: {str(e)}")
         return None, None
 
 def process_twitter_dataset(display_info=False, sample_limit=None):
@@ -408,27 +534,43 @@ def process_reviews_dataset(display_info=False, sample_limit=None):
             st.error(f"Error processing Reviews dataset: {str(e)}")
         return None
 
-def analyze_sentiment_with_model(text, model=None, vectorizer=None):
-    """Analyze sentiment using trained model or fallback to TextBlob"""
-    if model is not None and vectorizer is not None:
+def analyze_sentiment(text):
+    """Analyze sentiment with fallback options and caching"""
+    # Check cache
+    if text in sentiment_cache:
+        return sentiment_cache[text]
+    
+    # Try transformer model first
+    if model is not None and tokenizer is not None:
         try:
-            # Preprocess the text
-            processed_text = preprocess_text(text)
-            
-            # Transform text using vectorizer
-            text_vec = vectorizer.transform([processed_text])
-            
-            # Predict sentiment
-            sentiment_score = model.predict(text_vec)[0]
-            
-            return sentiment_score
+            score = analyze_sentiment_transformer(text)
+            if len(text) < 100:  # Cache only short texts
+                sentiment_cache[text] = score
+            return score
         except Exception as e:
-            st.warning(f"Custom model error: {e}. Falling back to TextBlob.")
-            # Fallback to TextBlob
-            return TextBlob(text).sentiment.polarity
-    else:
-        # Use TextBlob if no model is available
-        return TextBlob(text).sentiment.polarity
+            print(f"Transformer model error: {str(e)}. Trying custom model.")
+    
+    # Try custom trained model
+    try:
+        model = st.session_state.sentiment_model
+        vectorizer = st.session_state.vectorizer
+        
+        if model is not None and vectorizer is not None:
+            processed_text = preprocess_text(text)
+            text_vec = vectorizer.transform([processed_text])
+            score = model.predict(text_vec)[0]
+            
+            if len(text) < 100:
+                sentiment_cache[text] = score
+            return score
+    except Exception as e:
+        print(f"Custom model error: {str(e)}. Using TextBlob.")
+    
+    # Fallback to TextBlob
+    score = TextBlob(text).sentiment.polarity
+    if len(text) < 100:
+        sentiment_cache[text] = score
+    return score
 
 def init_database():
     """Initialize SQLite database for storing conversation and sentiment data"""
@@ -503,504 +645,245 @@ def init_database():
     conn.commit()
     conn.close()
 
-def analyze_sentiment(text):
-    """Analyze sentiment of text efficiently with caching for repeated phrases"""
-    # Check if we've analyzed this exact text before (simple cache)
-    if not hasattr(analyze_sentiment, "cache"):
-        analyze_sentiment.cache = {}
-    
-    # Check cache first (for common greetings/phrases)
-    if text in analyze_sentiment.cache:
-        return analyze_sentiment.cache[text]
-    
-    model = st.session_state.sentiment_model
-    vectorizer = st.session_state.vectorizer
-    
-    result = analyze_sentiment_with_model(text, model, vectorizer)
-    
-    # Store in cache if text is relatively short (to avoid memory bloat)
-    if len(text) < 100:
-        analyze_sentiment.cache[text] = result
-    
-    return result
-
-def get_sentiment_label(score):
-    """Convert sentiment score to human-readable label"""
-    if score > 0.3:
-        return "Very Positive"
-    elif score > 0:
-        return "Somewhat Positive"
-    elif score == 0:
-        return "Neutral"
-    elif score > -0.3:
-        return "Somewhat Negative"
-    else:
-        return "Very Negative"
-
-def get_sentiment_category(score):
-    """Convert sentiment score to category for database"""
-    if score > 0.3:
-        return "very_positive"
-    elif score > 0:
-        return "somewhat_positive"
-    elif score == 0:
-        return "neutral"
-    elif score > -0.3:
-        return "somewhat_negative"
-    else:
-        return "very_negative"
-
-def save_conversation(user_message, ai_response, sentiment_score):
-    """Save conversation to database"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    timestamp = datetime.datetime.now().isoformat()
-    
-    cursor.execute(
-        "INSERT INTO conversations (timestamp, user_message, ai_response, sentiment_score) VALUES (?, ?, ?, ?)",
-        (timestamp, user_message, ai_response, sentiment_score)
-    )
-    
-    conn.commit()
-    conn.close()
-
-def get_therapeutic_response(sentiment_score):
-    """Get a therapeutic response based on sentiment as fallback"""
-    sentiment_category = get_sentiment_category(sentiment_score)
-    
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # Get all responses for the sentiment category
-    cursor.execute(
-        "SELECT response_template FROM therapeutic_responses WHERE sentiment_category = ?",
-        (sentiment_category,)
-    )
-    
-    responses = cursor.fetchall()
-    conn.close()
-    
-    if responses:
-        # Choose a random response from matching category
-        return random.choice(responses)[0]
-    else:
-        # Fallback response
-        return "I'm here to listen and support you. Please tell me more about how you're feeling."
-
-def format_conversation_for_gemini(messages):
-    """Format the conversation history for Gemini API - optimized version"""
-    system_message = None
-    
-    # Extract system message if present
-    if messages and messages[0]["role"] == "system":
-        system_message = messages[0]["content"]
-        messages = messages[1:]
-    
-    # Use string builder pattern for better performance
-    conversation_parts = []
-    
-    if system_message:
-        conversation_parts.append(f"System instructions: {system_message}\n\n")
-    
-    # Only include the last 5 messages to reduce token count
-    message_limit = min(len(messages), 5)
-    for msg in messages[-message_limit:]:
-        if msg["role"] == "user":
-            conversation_parts.append(f"User: {msg['content']}\n")
-        elif msg["role"] == "assistant":
-            conversation_parts.append(f"Assistant: {msg['content']}\n")
-    
-    # Add final prompt for the assistant to respond
-    conversation_parts.append("Assistant: ")
-    
-    return ''.join(conversation_parts)
-
-def call_gemini_api(messages):
-    """Call Gemini API with the conversation history - optimized version"""
-    try:
-        # Format conversation for Gemini
-        conversation_text = format_conversation_for_gemini(messages)
-        
-        # Prepare the request payload with more efficient settings
-        payload = {
-            "contents": [{
-                "parts": [{"text": conversation_text}]
-            }],
-            "generationConfig": {
-                "temperature": 0.7,
-                "maxOutputTokens": 300,  # Reduced for faster response
-                "topK": 40,
-                "topP": 0.95
-            }
-        }
-        
-        headers = {
-            "Content-Type": "application/json"
-        }
-        
-        # Add timeout for API call
-        response = requests.post(GEMINI_API_URL, headers=headers, json=payload, timeout=10)
-        response.raise_for_status()
-        
-        # Extract the generated text from the response
-        response_json = response.json()
-        if 'candidates' in response_json and len(response_json['candidates']) > 0:
-            generated_text = response_json['candidates'][0]['content']['parts'][0]['text']
-            return generated_text
-        else:
-            raise ValueError("No response content found in API response")
-            
-    except Exception as e:
-        print(f"Error calling Gemini API: {str(e)}")
-        # Use local fallback if API fails - more efficient version
-        sentiment_score = analyze_sentiment(messages[-1]["content"])
-        return get_therapeutic_response(sentiment_score)
-
 def analyze_sentiment_trend(conversation_history):
-    """Analyze the trend of sentiment scores in the conversation history"""
-    # Get sentiment scores from the last few exchanges
-    recent_scores = [msg.get("sentiment", 0) for msg in conversation_history[-6:] if msg["role"] == "user"]
+    """Analyze sentiment trends with optimized processing"""
+    # Get recent user messages
+    recent_messages = [
+        msg for msg in conversation_history[-6:]
+        if msg["role"] == "user"
+    ]
     
-    if len(recent_scores) < 2:
+    if len(recent_messages) < 2:
         return "stable"
     
-    # Calculate the overall trend
-    if recent_scores[-1] > recent_scores[0] + 0.1:
+    # Calculate sentiment scores in parallel
+    with ThreadPoolExecutor() as executor:
+        scores = list(executor.map(
+            lambda msg: msg.get("sentiment", analyze_sentiment(msg["content"])),
+            recent_messages
+        ))
+    
+    # Analyze trend
+    if scores[-1] > scores[0] + 0.1:
         return "improving"
-    elif recent_scores[-1] < recent_scores[0] - 0.1:
+    elif scores[-1] < scores[0] - 0.1:
         return "declining"
-    elif max(recent_scores) - min(recent_scores) > 0.3:
+    elif max(scores) - min(scores) > 0.3:
         return "fluctuating"
     else:
         return "stable"
 
 def generate_therapeutic_system_prompt(sentiment_score):
-    """Generate system prompt for the AI to act as a therapist"""
+    """Generate system prompt for the AI to act as a therapist with adaptive response length"""
     sentiment_category = get_sentiment_category(sentiment_score)
     
     base_prompt = """You are Therapy AI, a compassionate and empathetic AI therapist.
-Your goal is to provide supportive, thoughtful responses to users who are seeking emotional support or guidance.
-- Listen carefully and validate users' feelings
-- Ask thoughtful questions to better understand their situation
-- Provide gentle guidance without being judgmental
-- Suggest practical coping strategies when appropriate
-- Maintain a warm, supportive tone throughout the conversation
-- Never claim to diagnose medical conditions or replace professional healthcare
-- If someone is in crisis, suggest they contact emergency services or crisis hotlines
+Your responses should be concise and adaptive to the conversation:
+- For simple questions or acknowledgments, use very short responses (1-2 sentences)
+- For emotional support or validation, use brief but warm responses (2-3 sentences)
+- For complex situations or when specific guidance is needed, provide more detailed responses
+- Always start with the most important point
+- Break longer responses into short, digestible paragraphs
+- Use natural, conversational language
+- Never be verbose when a simple response would suffice
+
+Additional guidelines:
+- Listen carefully and validate feelings concisely
+- Ask focused questions when needed
+- Suggest practical strategies briefly
+- Maintain a warm tone while being direct
+- Never diagnose medical conditions
+- For crisis situations, immediately suggest emergency services
 """
     
     # Add sentiment-specific guidance
     if sentiment_category == "very_negative":
-        base_prompt += """The user appears to be expressing very negative emotions right now.
-- Respond with extra empathy and validation
-- Acknowledge the difficulty of their situation
-- Be especially gentle and supportive
-- Focus on immediate coping strategies if appropriate
-- Make sure they know they're not alone in these feelings"""
+        base_prompt += """The user is expressing very negative emotions:
+- Respond with focused empathy
+- Acknowledge their struggle briefly
+- Offer immediate, practical support
+- Keep responses gentle but direct"""
     elif sentiment_category == "somewhat_negative":
-        base_prompt += """The user appears to be expressing somewhat negative emotions.
-- Validate their feelings while gently exploring potential perspectives
-- Help them identify small steps that might improve their situation
-- Balance acknowledgment of difficulties with encouragement"""
+        base_prompt += """The user is expressing somewhat negative emotions:
+- Validate feelings briefly
+- Suggest one small, actionable step
+- Balance support with gentle encouragement"""
     elif sentiment_category == "neutral":
-        base_prompt += """The user's emotions appear neutral at the moment.
-- Ask thoughtful questions to better understand their situation
-- Help them explore their thoughts and feelings more deeply
-- Provide a balanced perspective in your responses"""
+        base_prompt += """The user's emotions appear neutral:
+- Ask one clear, focused question
+- Keep responses light and open-ended
+- Use short, engaging responses"""
     elif sentiment_category == "somewhat_positive":
-        base_prompt += """The user appears to be expressing somewhat positive emotions.
-- Reinforce and build upon these positive elements
-- Explore how these positive aspects might be expanded
-- Help them identify what's working well and why"""
+        base_prompt += """The user is expressing somewhat positive emotions:
+- Reinforce positive elements briefly
+- Ask about specific positive aspects
+- Keep the momentum with short, encouraging responses"""
     elif sentiment_category == "very_positive":
-        base_prompt += """The user appears to be expressing very positive emotions.
-- Celebrate their positive state
-- Help them reflect on what contributed to these feelings
-- Discuss how they might maintain this positive momentum"""
+        base_prompt += """The user is expressing very positive emotions:
+- Celebrate briefly but meaningfully
+- Ask about their success factors
+- Keep the positive energy with concise responses"""
     
     return {"role": "system", "content": base_prompt}
 
+async def process_user_message(message, conversation_history):
+    """Process user message asynchronously"""
+    # Analyze sentiment
+    sentiment_score = analyze_sentiment(message)
+    
+    # Get API response
+    api_response = await call_gemini_api_async({
+        "role": "user",
+        "content": message,
+        "sentiment": sentiment_score
+    })
+    
+    return sentiment_score, api_response
+
+def get_therapeutic_response(sentiment_score):
+    """Get a concise therapeutic response based on sentiment as fallback"""
+    sentiment_category = get_sentiment_category(sentiment_score)
+    
+    # Concise fallback responses
+    fallback_responses = {
+        "very_negative": [
+            "I hear how difficult this is. What would help you feel safer right now?",
+            "That sounds really tough. Let's focus on one small step forward.",
+            "I'm here with you. What do you need most in this moment?"
+        ],
+        "somewhat_negative": [
+            "Things seem challenging. What might help, even a little?",
+            "I understand your frustration. Should we explore some options?",
+            "That's not easy to deal with. What's helped before?"
+        ],
+        "neutral": [
+            "What's on your mind?",
+            "Tell me more about that.",
+            "How are you feeling about this?"
+        ],
+        "somewhat_positive": [
+            "That's good to hear. What's working well?",
+            "Sounds like you're making progress. What's helping?",
+            "I'm glad things are looking up. What's next?"
+        ],
+        "very_positive": [
+            "That's wonderful! What's contributing to this success?",
+            "I'm so glad you're feeling good. How can we maintain this?",
+            "Excellent progress! What's your next goal?"
+        ]
+    }
+    
+    # Choose a random concise response from the appropriate category
+    responses = fallback_responses.get(sentiment_category, ["I'm here to listen. Please tell me more."])
+    return random.choice(responses)
+
 def main():
-    # Configure app FIRST - must be the first Streamlit command
+    """Main application with optimized performance"""
+    # Configure app
     st.set_page_config(
         page_title=APP_TITLE,
-        page_icon="💬",
+        page_icon="🤖",
         layout="wide",
-        initial_sidebar_state="expanded"  # Default to expanded for desktop
+        initial_sidebar_state="auto"
     )
     
-    # Detect if on mobile device
-    is_mobile_view = False
-    
-    # Add mobile detection with CSS to completely hide sidebar on mobile
+    # Add custom CSS for performance
     st.markdown("""
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        if (window.innerWidth < 768) {
-            // Force hide sidebar on mobile devices
-            const style = document.createElement('style');
-            style.textContent = `
-                [data-testid="stSidebar"] {display: none !important;}
-                [data-testid="collapsedControl"] {display: none !important;}
-                .main .block-container {max-width: 100% !important; padding: 1rem !important;}
-            `;
-            document.head.appendChild(style);
+        <style>
+        /* Optimize rendering */
+        .stApp {
+            contain: content;
         }
-    });
-    </script>
-    
-    <style>
-    /* Base styling */
-    .block-container {padding-top: 1rem; padding-bottom: 1rem;}
-    
-    /* Welcome message styling */
-    .welcome-message {
-        font-size: 1.3rem; 
-        color: #4CAF50; 
-        margin-bottom: 20px;
-        text-align: center;
-        font-weight: 500;
-    }
-    
-    /* Style improvements for chat interface */
-    .stChatMessage {
-        background-color: #f0f2f6 !important;
-        border-radius: 10px !important;
-        margin-bottom: 0.5rem !important;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.1) !important;
-        padding: 0.75rem !important;
-    }
-    
-    /* User messages vs AI messages */
-    .stChatMessage[data-testid="stChatMessage-USER"] {
-        background-color: #E3F2FD !important;
-    }
-    
-    .stChatMessage[data-testid="stChatMessage-ASSISTANT"] {
-        background-color: #F1F8E9 !important;
-    }
-    
-    /* Ensure text messages have proper color contrast */
-    .stChatMessage p, .stChatMessage div, .stChatMessage span {
-        color: #111 !important;
-    }
-    
-    /* Improve chat input styling */
-    .stChatInputContainer {
-        padding-top: 1rem !important;
-        border-top: 1px solid #e0e0e0 !important;
-    }
-    
-    /* Mobile-specific styling */
-    @media (max-width: 768px) {
-        /* Completely hide sidebar on mobile */
-        [data-testid="stSidebar"] {display: none !important;}
-        [data-testid="collapsedControl"] {display: none !important;}
-        
-        /* Main content takes full width */
-        .main .block-container {
-            padding-left: 0.5rem !important;
-            padding-right: 0.5rem !important;
-            max-width: 100% !important;
+        /* Reduce reflow */
+        .main {
+            max-width: 1200px;
+            margin: 0 auto;
+            contain: layout;
         }
-        .welcome-message {
-            font-size: 1.1rem;
-            margin-bottom: 10px;
+        /* Hardware acceleration */
+        .stButton {
+            transform: translateZ(0);
         }
-        .stChatMessage {
-            padding: 0.5rem !important;
-        }
-    }
-    </style>
+        </style>
     """, unsafe_allow_html=True)
     
-    # Simple header - show first for instant feedback
+    # Initialize session state
+    if "conversation_history" not in st.session_state:
+        st.session_state.conversation_history = []
+    if "sentiment_model" not in st.session_state:
+        st.session_state.sentiment_model = None
+    if "vectorizer" not in st.session_state:
+        st.session_state.vectorizer = None
+    
+    # Simple header
     st.title(APP_TITLE)
+    st.markdown('<p class="welcome-message">Hi! there I am here to help you</p>', 
+                unsafe_allow_html=True)
     
-    # Add welcoming message
-    st.markdown('<p class="welcome-message">Hi! there I am here to help you</p>', unsafe_allow_html=True)
-    
-    # Initialize GUI components immediately
+    # Initialize GUI components
     chat_area = st.container()
     prompt_area = st.empty()
     
-    # Initialize model in background
+    # Initialize model in background if needed
     if "model_loading" not in st.session_state:
         st.session_state.model_loading = True
         
-        # Create a thread to load model in background
-        import threading
-        
         def load_model_in_background():
-            # Download NLTK resources if needed
-            download_nltk_resources()
+            # Download NLTK resources
+            nltk.download('punkt', quiet=True)
+            nltk.download('stopwords', quiet=True)
+            nltk.download('wordnet', quiet=True)
             
-            # Initialize database
-            init_database()
-            
-            # Train sentiment model
+            # Initialize models
             train_sentiment_model()
+            initialize_sentiment_model()
             
-            # Mark as loaded
             st.session_state.model_loading = False
             st.session_state.model_loaded = True
         
-        # Start background loading with smaller sample size
-        threading.Thread(target=load_model_in_background).start()
+        with ThreadPoolExecutor() as executor:
+            executor.submit(load_model_in_background)
     
-    # Check for API key only once
+    # Check API key
     if not hasattr(st.session_state, "api_checked"):
         if not GEMINI_API_KEY:
-            st.warning("⚠️ Gemini API Key not found or not set. Using local fallback responses.")
+            st.warning("⚠️ Gemini API Key not found. Using local fallback responses.")
         st.session_state.api_checked = True
     
-    # Initialize sentiment visualization in sidebar on desktop only
-    with st.sidebar:
-        st.subheader("Sentiment Analysis")
+    # Display conversation history
+    with chat_area:
+        for message in st.session_state.conversation_history:
+            role = message["role"]
+            content = message["content"]
+            
+            if role == "user":
+                st.markdown(f'<div class="user-message">{content}</div>', 
+                          unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="bot-message">{content}</div>', 
+                          unsafe_allow_html=True)
+    
+    # Get user input
+    with prompt_area:
+        user_input = st.text_input("You:", key="user_input")
         
-        # Show model loading status only if still loading
-        if st.session_state.get("model_loading", True) and not st.session_state.get("model_loaded", False):
-            with st.spinner("Initializing sentiment analysis..."):
-                pass  # Just show the spinner without text
-        
-        # Show sentiment chart if we have data
-        if len(st.session_state.sentiment_history) > 0:
-            # Add visual color indicators for sentiment ranges
-            st.markdown("""
-            <style>
-            .positive-sentiment { color: green; font-weight: bold; }
-            .neutral-sentiment { color: gray; font-weight: bold; }
-            .negative-sentiment { color: red; font-weight: bold; }
-            </style>
-            
-            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                <span class="negative-sentiment">Negative</span>
-                <span class="neutral-sentiment">Neutral</span>
-                <span class="positive-sentiment">Positive</span>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Create well-formatted chart with clear labels
-            recent_sentiments = st.session_state.sentiment_history[-10:] if len(st.session_state.sentiment_history) > 10 else st.session_state.sentiment_history
-            chart_data = pd.DataFrame({"Sentiment": recent_sentiments})
-            
-            # Add custom chart with better formatting
-            st.line_chart(
-                chart_data,
-                use_container_width=True,
-                height=200
+        if user_input:
+            # Process message asynchronously
+            sentiment_score, bot_response = asyncio.run(
+                process_user_message(user_input, st.session_state.conversation_history)
             )
             
-            # Display metrics in columns for better layout
-            col1, col2 = st.columns(2)
+            # Update conversation history
+            st.session_state.conversation_history.extend([
+                {"role": "user", "content": user_input, "sentiment": sentiment_score},
+                {"role": "assistant", "content": bot_response}
+            ])
             
-            # Calculate average sentiment
-            recent_sentiment = st.session_state.sentiment_history[-5:] if len(st.session_state.sentiment_history) >= 5 else st.session_state.sentiment_history
-            avg_sentiment = sum(recent_sentiment) / len(recent_sentiment)
+            # Clear input
+            st.session_state.user_input = ""
             
-            with col1:
-                st.metric("Avg Sentiment", f"{avg_sentiment:.2f}", get_sentiment_label(avg_sentiment))
-            
-            with col2:
-                st.metric("Messages", len(st.session_state.messages) // 2)
-            
-            # Show sentiment trend analysis if we have enough data
-            if len(st.session_state.messages) >= 2:
-                trend = analyze_sentiment_trend(st.session_state.messages[-6:] if len(st.session_state.messages) >= 6 else st.session_state.messages)
-                
-                # Use color-coded trend indicators
-                trend_color = {
-                    "improving": "green",
-                    "declining": "red",
-                    "fluctuating": "orange",
-                    "stable": "gray"
-                }.get(trend, "gray")
-                
-                st.markdown(f"<p style='color:{trend_color}'>Recent trend: <b>{trend.capitalize()}</b></p>", unsafe_allow_html=True)
-        else:
-            # Add blank space placeholder for better layout instead of info message
-            st.write("")
-    
-    # Display chat messages with optimized rendering
-    with chat_area:
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.write(message["content"])
-                
-                # Show sentiment for user messages
-                if message["role"] == "user" and message.get("sentiment") is not None:
-                    sentiment_score = message["sentiment"]
-                    sentiment_label = get_sentiment_label(sentiment_score)
-                    
-                    # Use color based on sentiment
-                    if sentiment_score > 0.3:
-                        color = "green"
-                    elif sentiment_score > 0:
-                        color = "lightgreen"
-                    elif sentiment_score == 0:
-                        color = "gray"
-                    elif sentiment_score > -0.3:
-                        color = "orange"
-                    else:
-                        color = "red"
-                        
-                    st.markdown(f"<span style='color:{color};font-size:0.8em'>Sentiment: {sentiment_label}</span>", unsafe_allow_html=True)
-    
-    # Input for new message
-    prompt = st.chat_input("Type your message here...")
-    if prompt:
-        # Add user message to chat history
-        if st.session_state.get("model_loaded", False):
-            # Use trained model
-            sentiment_score = analyze_sentiment(prompt)
-        else:
-            # Fallback to TextBlob until model is loaded
-            sentiment_score = TextBlob(prompt).sentiment.polarity
-            
-        user_message = {"role": "user", "content": prompt, "sentiment": sentiment_score}
-        st.session_state.messages.append(user_message)
-        st.session_state.sentiment_history.append(sentiment_score)
-        
-        # Display user message
-        with st.chat_message("user"):
-            st.write(prompt)
-            sentiment_label = get_sentiment_label(sentiment_score)
-            
-            # Use color based on sentiment
-            if sentiment_score > 0.3:
-                color = "green"
-            elif sentiment_score > 0:
-                color = "lightgreen"
-            elif sentiment_score == 0:
-                color = "gray"
-            elif sentiment_score > -0.3:
-                color = "orange"
-            else:
-                color = "red"
-                
-            st.markdown(f"<span style='color:{color};font-size:0.8em'>Sentiment: {sentiment_label}</span>", unsafe_allow_html=True)
-        
-        # Prepare messages for API call - only send necessary data
-        api_messages = [generate_therapeutic_system_prompt(sentiment_score)]
-        for msg in st.session_state.messages[-5:]:  # Only use last 5 messages for context
-            if msg.get("sentiment") is not None:
-                # For API calls, remove sentiment data
-                api_messages.append({"role": msg["role"], "content": msg["content"]})
-            else:
-                api_messages.append(msg)
-        
-        # Get and display assistant response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                response = call_gemini_api(api_messages)
-                st.write(response)
-        
-        # Add assistant response to chat history
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        
-        # Save conversation to database if model is ready
-        if st.session_state.get("model_loaded", False):
-            save_conversation(prompt, response, sentiment_score)
+            # Force rerun for immediate update
+            st.experimental_rerun()
 
 if __name__ == "__main__":
     main() 
